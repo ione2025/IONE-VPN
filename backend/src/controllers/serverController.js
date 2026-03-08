@@ -27,9 +27,11 @@ exports.recommend = async (req, res, next) => {
     }
 
     const scored = servers.map((s) => {
+      // loadScore: 0–100 (lower load = higher score)
       const loadScore = (100 - s.load) * 0.5;
+      // pingScore: normalize 0–500 ms to 0–100 range (lower ping = higher score)
       const pingScore = Math.max(0, (500 - s.ping) / 5);
-      // Slight bonus for same region
+      // Slight bonus for same region as the requesting client
       const regionBonus = userRegion && s.region.toLowerCase().includes(userRegion.toLowerCase()) ? 20 : 0;
       return { ...s, score: loadScore + pingScore + regionBonus };
     });

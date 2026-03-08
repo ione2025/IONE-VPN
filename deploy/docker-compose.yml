@@ -1,0 +1,56 @@
+version: '3.9'
+
+# Optional: use Docker Compose instead of bare-metal install.
+# Run: docker compose up -d
+
+services:
+
+  # ── MongoDB ────────────────────────────────────────────────────────────────
+  mongo:
+    image: mongo:7
+    container_name: ione-vpn-mongo
+    restart: unless-stopped
+    volumes:
+      - mongo_data:/data/db
+    networks:
+      - backend
+
+  # ── Redis ──────────────────────────────────────────────────────────────────
+  redis:
+    image: redis:7-alpine
+    container_name: ione-vpn-redis
+    restart: unless-stopped
+    command: redis-server --requirepass ${REDIS_PASSWORD:-changeme}
+    networks:
+      - backend
+
+  # ── IONE VPN API ───────────────────────────────────────────────────────────
+  api:
+    build:
+      context: ../backend
+      dockerfile: Dockerfile
+    container_name: ione-vpn-api
+    restart: unless-stopped
+    env_file: ../backend/.env
+    environment:
+      MONGODB_URI: mongodb://mongo:27017/ione_vpn
+      REDIS_HOST: redis
+    ports:
+      - "127.0.0.1:3000:3000"
+    depends_on:
+      - mongo
+      - redis
+    networks:
+      - backend
+    # WireGuard needs NET_ADMIN capability
+    cap_add:
+      - NET_ADMIN
+    volumes:
+      - /etc/wireguard:/etc/wireguard
+
+volumes:
+  mongo_data:
+
+networks:
+  backend:
+    driver: bridge

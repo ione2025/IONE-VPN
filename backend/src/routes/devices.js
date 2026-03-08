@@ -6,15 +6,15 @@ const deviceController = require('../controllers/deviceController');
 const { protect } = require('../middleware/auth');
 const { apiLimiter } = require('../middleware/rateLimiter');
 
-router.use(protect, apiLimiter);
-
-router.get('/', deviceController.list);
+router.get('/', apiLimiter, protect, deviceController.list);
 router.patch(
   '/:deviceId/rename',
+  apiLimiter,
+  protect,
   param('deviceId').notEmpty(),
   body('name').trim().notEmpty().isLength({ max: 64 }),
   deviceController.rename,
 );
-router.delete('/:deviceId', param('deviceId').notEmpty(), deviceController.revoke);
+router.delete('/:deviceId', apiLimiter, protect, param('deviceId').notEmpty(), deviceController.revoke);
 
 module.exports = router;

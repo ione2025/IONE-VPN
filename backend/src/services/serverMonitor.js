@@ -73,10 +73,12 @@ exports.getDetailedStats = async () => {
   const stats = await Promise.all(
     SERVERS.map(async (s) => {
       const [ping, load] = await Promise.all([measurePing(s.ip), measureLoad()]);
-      s.ping = ping;
-      s.load = load;
-      s.isOnline = ping < 999;
-      return { ...s };
+      return {
+        ...s,
+        ping,
+        load,
+        isOnline: ping < 999,
+      };
     }),
   );
 

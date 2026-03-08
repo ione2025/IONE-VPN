@@ -3,9 +3,13 @@
 /**
  * Integration tests for IONE VPN backend API.
  *
- * These tests run against an in-memory MongoDB instance (via jest environment
- * variables) and mock the Redis and WireGuard CLI so no real infrastructure
- * is needed.
+ * Prerequisites:
+ *   - MongoDB must be running on localhost:27017 (the test DB is dropped after each run).
+ *     Start with: `mongod --dbpath /tmp/ione-test-db --fork --logpath /tmp/mongod.log`
+ *   - Redis is mocked (no real Redis needed).
+ *   - WireGuard CLI is mocked (no real WireGuard needed).
+ *
+ * Run: npm test
  */
 
 // ─── Environment setup (must happen before app is loaded) ─────────────────────

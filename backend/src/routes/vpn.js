@@ -6,10 +6,10 @@ const vpnController = require('../controllers/vpnController');
 const { protect } = require('../middleware/auth');
 const { apiLimiter } = require('../middleware/rateLimiter');
 
-router.use(protect, apiLimiter);
-
 router.post(
   '/config',
+  apiLimiter,
+  protect,
   [
     body('name').trim().notEmpty().isLength({ max: 64 }),
     body('platform').isIn(['ios', 'android', 'windows', 'macos', 'linux', 'browser']),
@@ -18,9 +18,9 @@ router.post(
   vpnController.generateConfig,
 );
 
-router.get('/status', vpnController.getStatus);
-router.post('/connect', body('deviceId').notEmpty(), vpnController.connect);
-router.post('/disconnect', body('deviceId').notEmpty(), vpnController.disconnect);
-router.get('/speedtest', vpnController.speedTest);
+router.get('/status', apiLimiter, protect, vpnController.getStatus);
+router.post('/connect', apiLimiter, protect, body('deviceId').notEmpty(), vpnController.connect);
+router.post('/disconnect', apiLimiter, protect, body('deviceId').notEmpty(), vpnController.disconnect);
+router.get('/speedtest', apiLimiter, protect, vpnController.speedTest);
 
 module.exports = router;

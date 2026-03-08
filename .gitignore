@@ -1,0 +1,46 @@
+# ─── Dependencies ────────────────────────────────────────────────────────────
+node_modules/
+.pnp
+.pnp.js
+
+# ─── Environment / secrets ───────────────────────────────────────────────────
+.env
+.env.local
+.env.*.local
+*.pem
+
+# ─── Logs ────────────────────────────────────────────────────────────────────
+logs/
+*.log
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+
+# ─── Build output ────────────────────────────────────────────────────────────
+build/
+dist/
+out/
+.dart_tool/
+.flutter-plugins
+.flutter-plugins-dependencies
+flutter_app/.dart_tool/
+flutter_app/build/
+flutter_app/.flutter-plugins
+flutter_app/.flutter-plugins-dependencies
+
+# ─── IDE / OS ────────────────────────────────────────────────────────────────
+.idea/
+.vscode/
+*.swp
+*.swo
+.DS_Store
+Thumbs.db
+
+# ─── Flutter / Dart ───────────────────────────────────────────────────────────
+*.g.dart
+*.freezed.dart
+pubspec.lock
+
+# ─── WireGuard private keys (NEVER commit) ───────────────────────────────────
+*.key
+privatekey

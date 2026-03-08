@@ -36,7 +36,7 @@ exports.generateConfig = async (req, res, next) => {
     let deviceData = { userId, name, platform, protocol };
 
     if (protocol === 'wireguard') {
-      const { clientPrivateKey, clientPublicKey, presharedKey, assignedIp, configFile } =
+      const { clientPublicKey, presharedKey, assignedIp, configFile } =
         await wireguardService.addPeer(userId);
       config = configFile;
       deviceData = { ...deviceData, wgPublicKey: clientPublicKey, wgPresharedKey: presharedKey, assignedIp };

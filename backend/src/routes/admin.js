@@ -6,17 +6,25 @@ const adminController = require('../controllers/adminController');
 const { protect, restrictTo } = require('../middleware/auth');
 const { apiLimiter } = require('../middleware/rateLimiter');
 
-router.use(protect, restrictTo('admin'), apiLimiter);
-
-router.get('/dashboard', adminController.dashboard);
-router.get('/users', adminController.listUsers);
+router.get('/dashboard', apiLimiter, protect, restrictTo('admin'), adminController.dashboard);
+router.get('/users', apiLimiter, protect, restrictTo('admin'), adminController.listUsers);
 router.patch(
   '/users/:userId/subscription',
+  apiLimiter,
+  protect,
+  restrictTo('admin'),
   param('userId').notEmpty(),
   body('tier').isIn(['free', 'monthly', 'quarterly', 'yearly']),
   adminController.updateSubscription,
 );
-router.patch('/users/:userId/toggle-status', param('userId').notEmpty(), adminController.toggleUserStatus);
-router.get('/wg-peers', adminController.wgPeers);
+router.patch(
+  '/users/:userId/toggle-status',
+  apiLimiter,
+  protect,
+  restrictTo('admin'),
+  param('userId').notEmpty(),
+  adminController.toggleUserStatus,
+);
+router.get('/wg-peers', apiLimiter, protect, restrictTo('admin'), adminController.wgPeers);
 
 module.exports = router;

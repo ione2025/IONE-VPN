@@ -70,19 +70,17 @@ function allocateIp() {
  * Returns the client config file text that is sent to the device.
  */
 exports.addPeer = async (userId) => {
-  // Generate client keys
-  const clientPrivateKey = await wg('genkey');
-  const clientPublicKey = await wg('pubkey').catch(async () => {
-    // pipe: echo clientPrivateKey | wg pubkey
-    const { stdout } = await execFileAsync('sh', [
-      '-c',
-      `echo '${clientPrivateKey}' | wg pubkey`,
-    ]);
-    return stdout.trim();
-  });
+  // Generate client keys using a single shell pipeline to properly pipe private → public key
+  const { stdout: clientPrivateKey } = await execFileAsync('wg', ['genkey']);
+  const trimmedPrivateKey = clientPrivateKey.trim();
+
+  const { stdout: clientPublicKey } = await execFileAsync('sh', [
+    '-c',
+    `echo '${trimmedPrivateKey}' | wg pubkey`,
+  ]).catch(async () => ({ stdout: `PUBKEY_${userId}_${Date.now()}\n` }));
 
   // Fallback for environments without real wg CLI (CI/test)
-  const effectiveClientPublicKey = clientPublicKey || `PUBKEY_${userId}_${Date.now()}`;
+  const effectiveClientPublicKey = clientPublicKey.trim() || `PUBKEY_${userId}_${Date.now()}`;
 
   const presharedKey = await wg('genpsk').catch(() => '');
   const assignedIp = allocateIp();
@@ -110,7 +108,7 @@ exports.addPeer = async (userId) => {
   // Build the client config file
   const configFile = [
     '[Interface]',
-    `PrivateKey = ${clientPrivateKey}`,
+    `PrivateKey = ${trimmedPrivateKey}`,
     `Address = ${assignedIp}`,
     `DNS = ${WG_DNS}`,
     '',
@@ -118,14 +116,14 @@ exports.addPeer = async (userId) => {
     `PublicKey = ${SERVER_PUBLIC_KEY}`,
     presharedKey ? `PresharedKey = ${presharedKey}` : '',
     `Endpoint = ${SERVER_ENDPOINT}`,
-    'AllowedIPs = 0.0.0.0/0, ::/0',  // full tunnel (DNS leak protection)
+    'AllowedIPs = 0.0.0.0/0, ::/0',  // full tunnel (route all traffic through VPN)
     'PersistentKeepalive = 25',
   ]
-    .filter((l) => l !== null && l !== undefined && !(l.startsWith('PresharedKey') && !presharedKey))
+    .filter(Boolean)
     .join('\n');
 
   return {
-    clientPrivateKey,
+    clientPrivateKey: trimmedPrivateKey,
     clientPublicKey: effectiveClientPublicKey,
     presharedKey,
     assignedIp,
@@ -135,10 +133,15 @@ exports.addPeer = async (userId) => {
 
 /**
  * Remove a peer from WireGuard by public key.
+ * @param {string} publicKey - the client's WireGuard public key
+ * @param {string} [assignedIp] - the IP to release back to the pool (e.g. "10.8.0.2/32")
  */
-exports.removePeer = async (publicKey) => {
+exports.removePeer = async (publicKey, assignedIp) => {
   await execFileAsync('wg', ['set', WG_INTERFACE, 'peer', publicKey, 'remove']);
-  usedIps.delete(publicKey); // best-effort cleanup
+  if (assignedIp) {
+    // Strip the CIDR suffix to match the stored bare IP
+    usedIps.delete(assignedIp.split('/')[0]);
+  }
   logger.info(`WireGuard peer removed: ${publicKey}`);
 };
 

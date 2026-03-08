@@ -49,7 +49,7 @@ exports.revoke = async (req, res, next) => {
 
     // Remove the peer from WireGuard if applicable
     if (device.protocol === 'wireguard' && device.wgPublicKey) {
-      await wireguardService.removePeer(device.wgPublicKey).catch((err) =>
+      await wireguardService.removePeer(device.wgPublicKey, device.assignedIp).catch((err) =>
         logger.warn('Could not remove WG peer (may already be gone):', err.message),
       );
     }
