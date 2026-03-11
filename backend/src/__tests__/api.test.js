@@ -3,11 +3,9 @@
 /**
  * Integration tests for IONE VPN backend API.
  *
- * Prerequisites:
- *   - MongoDB must be running on localhost:27017 (the test DB is dropped after each run).
- *     Start with: `mongod --dbpath /tmp/ione-test-db --fork --logpath /tmp/mongod.log`
- *   - Redis is mocked (no real Redis needed).
- *   - WireGuard CLI is mocked (no real WireGuard needed).
+ * Requires MongoDB on localhost:27017 (the test DB is dropped after each run).
+ * WireGuard key generation uses Node.js built-in crypto – no `wg` binary needed.
+ * Redis and OpenVPN are mocked.
  *
  * Run: npm test
  */
@@ -26,19 +24,6 @@ jest.mock('../config/redis', () => {
   fn.getRedis = jest.fn();
   return fn;
 });
-
-// Mock WireGuard CLI calls
-jest.mock('../services/wireguardService', () => ({
-  addPeer: jest.fn().mockResolvedValue({
-    clientPrivateKey: 'FAKE_PRIVATE_KEY',
-    clientPublicKey: 'FAKE_PUBLIC_KEY',
-    presharedKey: 'FAKE_PSK',
-    assignedIp: '10.8.0.2/32',
-    configFile: '[Interface]\nPrivateKey = FAKE_PRIVATE_KEY',
-  }),
-  removePeer: jest.fn().mockResolvedValue(undefined),
-  getPeerStats: jest.fn().mockResolvedValue([]),
-}));
 
 jest.mock('../services/openvpnService', () => ({
   generateClientConfig: jest.fn().mockResolvedValue('client\ndev tun'),
@@ -202,6 +187,55 @@ describe('POST /api/v1/vpn/config', () => {
     expect(second.status).toBe(200);
     expect(second.body.deviceId).toBe(first.body.deviceId);
     expect(second.body).toHaveProperty('config');
+  });
+
+  it('allows reconnect on existing device even when active device count equals the free limit', async () => {
+    // Simulates the "same email, same Windows device, same password" scenario:
+    // user has already consumed their free slot (1 device), and the app
+    // requests a new config for that same device (e.g. after reinstall).
+    // The request must succeed (200) because we are rotating an existing device,
+    // not adding a new one.
+    const token = await registerAndLogin('vpn-reconnect@example.com');
+
+    // First connect – creates the Windows device and reaches the free limit.
+    const first = await request(app)
+      .post('/api/v1/vpn/config')
+      .set('Authorization', `Bearer ${token}`)
+      .send({ name: 'vpn-reconnect@example.com-windows', platform: 'windows', protocol: 'wireguard' });
+
+    expect(first.status).toBe(201);
+
+    // Second connect from the same device (simulates reinstall / cleared cache).
+    // Must NOT return 403 "Device limit reached".
+    const reconnect = await request(app)
+      .post('/api/v1/vpn/config')
+      .set('Authorization', `Bearer ${token}`)
+      .send({ name: 'vpn-reconnect@example.com-windows', platform: 'windows', protocol: 'wireguard' });
+
+    expect(reconnect.status).toBe(200);
+    expect(reconnect.body.deviceId).toBe(first.body.deviceId);
+    expect(reconnect.body).toHaveProperty('config');
+  });
+
+  it('blocks a free user from registering a second device on a different platform', async () => {
+    const token = await registerAndLogin('vpn-limit@example.com');
+
+    // Register the first (Windows) device – uses the only free slot.
+    const first = await request(app)
+      .post('/api/v1/vpn/config')
+      .set('Authorization', `Bearer ${token}`)
+      .send({ name: 'vpn-limit@example.com-windows', platform: 'windows', protocol: 'wireguard' });
+
+    expect(first.status).toBe(201);
+
+    // Attempt to add a second device on a different platform – must be blocked.
+    const second = await request(app)
+      .post('/api/v1/vpn/config')
+      .set('Authorization', `Bearer ${token}`)
+      .send({ name: 'vpn-limit@example.com-android', platform: 'android', protocol: 'wireguard' });
+
+    expect(second.status).toBe(403);
+    expect(second.body.message).toMatch(/device limit/i);
   });
 });
 

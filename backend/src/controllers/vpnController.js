@@ -38,16 +38,17 @@ exports.generateConfig = async (req, res, next) => {
       }).sort({ updatedAt: -1 });
     }
 
-    // Enforce device limit
-    const maxDevices = user.subscription?.unlimitedBandwidth
-      ? MAX_DEVICES_PREMIUM
-      : MAX_DEVICES_FREE;
-    const activeDevices = await Device.countDocuments({ userId, isActive: true });
-    const activeDevicesForLimit = existingDevice ? Math.max(0, activeDevices - 1) : activeDevices;
-    if (activeDevicesForLimit >= maxDevices) {
-      return res.status(403).json({
-        message: `Device limit reached (${maxDevices}). Upgrade to premium for up to ${MAX_DEVICES_PREMIUM} devices.`,
-      });
+    // Enforce device limit only when adding a genuinely new device.
+    // When an existingDevice is found we are rotating/reconnecting that device,
+    // not consuming an additional slot, so the limit check is skipped entirely.
+    if (!existingDevice) {
+      const maxDevices = user.subscription?.maxDevices ?? MAX_DEVICES_FREE;
+      const activeDevices = await Device.countDocuments({ userId, isActive: true });
+      if (activeDevices >= maxDevices) {
+        return res.status(403).json({
+          message: `Device limit reached (${maxDevices}). Upgrade to premium for up to ${MAX_DEVICES_PREMIUM} devices.`,
+        });
+      }
     }
 
     let config;
