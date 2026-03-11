@@ -89,7 +89,7 @@ class _SplashScreenState extends State<SplashScreen>
                 'Secure. Fast. Private.',
                 style: TextStyle(
                   fontSize: 15,
-                  color: Colors.white.withOpacity(0.55),
+                  color: Colors.white.withValues(alpha: 0.55),
                 ),
               ),
               const SizedBox(height: 48),

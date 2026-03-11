@@ -1,0 +1,24 @@
+Placeholder Image Description
+
+Purpose:
+Temporary image for UI sections where final artwork is not ready.
+
+Suggested style:
+- Minimal abstract gradient background
+- Centered icon (cloud or shield)
+- Soft rounded corners
+- Clean, modern look
+
+Recommended sizes:
+- 512x512 (general)
+- 1024x1024 (high quality source)
+
+Suggested colors:
+- Background: #E6F4FF to #CFE8FF gradient
+- Icon: #1F6FEB
+- Accent: #0EA5E9
+
+File naming examples:
+- placeholder_square.png
+- placeholder_banner.png
+- placeholder_profile.png

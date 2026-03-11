@@ -17,7 +17,9 @@ void main() async {
       providers: [
         ChangeNotifierProvider(create: (_) => ThemeProvider()),
         ChangeNotifierProvider(create: (_) => AuthProvider(apiService)),
-        ChangeNotifierProvider(create: (_) => VpnProvider(apiService)),
+        ChangeNotifierProvider(
+          create: (_) => VpnProvider(apiService)..initialize(),
+        ),
       ],
       child: const IoneVpnApp(),
     ),

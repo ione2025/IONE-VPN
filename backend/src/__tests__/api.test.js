@@ -182,6 +182,27 @@ describe('POST /api/v1/vpn/config', () => {
 
     expect(res.status).toBe(422);
   });
+
+  it('reuses existing device for same name/platform on reconnect', async () => {
+    const token = await registerAndLogin('vpn-reuse@example.com');
+
+    const first = await request(app)
+      .post('/api/v1/vpn/config')
+      .set('Authorization', `Bearer ${token}`)
+      .send({ name: 'My PC', platform: 'windows', protocol: 'wireguard' });
+
+    expect(first.status).toBe(201);
+    expect(first.body).toHaveProperty('deviceId');
+
+    const second = await request(app)
+      .post('/api/v1/vpn/config')
+      .set('Authorization', `Bearer ${token}`)
+      .send({ name: 'My PC', platform: 'windows', protocol: 'wireguard' });
+
+    expect(second.status).toBe(200);
+    expect(second.body.deviceId).toBe(first.body.deviceId);
+    expect(second.body).toHaveProperty('config');
+  });
 });
 
 // ─── Servers ──────────────────────────────────────────────────────────────────

@@ -95,7 +95,7 @@ class _ConnectButtonState extends State<ConnectButton>
           decoration: BoxDecoration(
             shape: BoxShape.circle,
             border: Border.all(color: _ringColor, width: 4),
-            color: _buttonColor.withOpacity(0.12),
+            color: _buttonColor.withValues(alpha: 0.12),
           ),
           child: Center(
             child: Container(
@@ -106,7 +106,7 @@ class _ConnectButtonState extends State<ConnectButton>
                 color: _buttonColor,
                 boxShadow: [
                   BoxShadow(
-                    color: _buttonColor.withOpacity(0.35),
+                    color: _buttonColor.withValues(alpha: 0.35),
                     blurRadius: 24,
                     spreadRadius: 4,
                   ),

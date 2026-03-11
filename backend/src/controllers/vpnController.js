@@ -21,12 +21,30 @@ exports.generateConfig = async (req, res, next) => {
     const userId = req.user.id;
     const user = req.user.doc;
 
+    let existingDevice = await Device.findOne({
+      userId,
+      name,
+      platform,
+      protocol,
+      isActive: true,
+    }).sort({ updatedAt: -1 });
+
+    if (!existingDevice) {
+      existingDevice = await Device.findOne({
+        userId,
+        platform,
+        protocol,
+        isActive: true,
+      }).sort({ updatedAt: -1 });
+    }
+
     // Enforce device limit
     const maxDevices = user.subscription?.unlimitedBandwidth
       ? MAX_DEVICES_PREMIUM
       : MAX_DEVICES_FREE;
     const activeDevices = await Device.countDocuments({ userId, isActive: true });
-    if (activeDevices >= maxDevices) {
+    const activeDevicesForLimit = existingDevice ? Math.max(0, activeDevices - 1) : activeDevices;
+    if (activeDevicesForLimit >= maxDevices) {
       return res.status(403).json({
         message: `Device limit reached (${maxDevices}). Upgrade to premium for up to ${MAX_DEVICES_PREMIUM} devices.`,
       });
@@ -46,10 +64,27 @@ exports.generateConfig = async (req, res, next) => {
       return res.status(400).json({ message: `Unsupported protocol: ${protocol}` });
     }
 
-    const device = await Device.create(deviceData);
-    logger.info(`VPN config generated for user ${userId}, device ${device.deviceId}, protocol ${protocol}`);
+    let device;
+    let statusCode;
 
-    res.status(201).json({
+    if (existingDevice) {
+      if (existingDevice.protocol === 'wireguard' && existingDevice.wgPublicKey) {
+        await wireguardService.removePeer(existingDevice.wgPublicKey, existingDevice.assignedIp).catch((err) =>
+          logger.warn('Could not remove old WG peer while rotating config:', err.message),
+        );
+      }
+
+      existingDevice.set(deviceData);
+      device = await existingDevice.save();
+      statusCode = 200;
+    } else {
+      device = await Device.create(deviceData);
+      statusCode = 201;
+    }
+
+    logger.info(`VPN config generated for user ${userId}, device ${device.deviceId}, protocol ${protocol}, reused=${Boolean(existingDevice)}`);
+
+    res.status(statusCode).json({
       deviceId: device.deviceId,
       protocol,
       config, // raw config file content – client saves to disk

@@ -30,7 +30,7 @@ class AppTheme {
           headlineMedium: TextStyle(color: base, fontWeight: FontWeight.w600),
           titleLarge: TextStyle(color: base, fontWeight: FontWeight.w600),
           bodyLarge: TextStyle(color: base),
-          bodyMedium: TextStyle(color: base.withOpacity(0.75)),
+          bodyMedium: TextStyle(color: base.withValues(alpha: 0.75)),
           labelLarge: const TextStyle(fontWeight: FontWeight.w600),
         ),
       );
@@ -42,7 +42,7 @@ class AppTheme {
     colorScheme: ColorScheme.fromSeed(
       seedColor: primaryBlue,
       brightness: Brightness.light,
-      background: lightBg,
+
       surface: lightSurface,
     ),
     scaffoldBackgroundColor: lightBg,
@@ -53,7 +53,7 @@ class AppTheme {
       elevation: 0,
       centerTitle: true,
     ),
-    cardTheme: CardTheme(
+    cardTheme: CardThemeData(
       color: lightCard,
       elevation: 0,
       shape: RoundedRectangleBorder(
@@ -85,7 +85,7 @@ class AppTheme {
     colorScheme: ColorScheme.fromSeed(
       seedColor: primaryBlue,
       brightness: Brightness.dark,
-      background: darkBg,
+
       surface: darkSurface,
     ),
     scaffoldBackgroundColor: darkBg,
@@ -96,7 +96,7 @@ class AppTheme {
       elevation: 0,
       centerTitle: true,
     ),
-    cardTheme: CardTheme(
+    cardTheme: CardThemeData(
       color: darkCard,
       elevation: 0,
       shape: RoundedRectangleBorder(

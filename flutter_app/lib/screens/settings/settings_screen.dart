@@ -83,6 +83,7 @@ class SettingsScreen extends StatelessWidget {
                 );
                 if (confirmed == true && context.mounted) {
                   await context.read<AuthProvider>().logout();
+                  if (!context.mounted) return;
                   Navigator.pushNamedAndRemoveUntil(
                       context, '/login', (_) => false);
                 }
@@ -99,7 +100,7 @@ class SettingsScreen extends StatelessWidget {
 
 // ─── Protocol tile ────────────────────────────────────────────────────────────
 class _ProtocolTile extends StatefulWidget {
-  const _ProtocolTile({super.key});
+  const _ProtocolTile();
 
   @override
   State<_ProtocolTile> createState() => _ProtocolTileState();
@@ -129,7 +130,7 @@ class _ProtocolTileState extends State<_ProtocolTile> {
 
 // ─── Kill switch tile ─────────────────────────────────────────────────────────
 class _KillSwitchTile extends StatefulWidget {
-  const _KillSwitchTile({super.key});
+  const _KillSwitchTile();
 
   @override
   State<_KillSwitchTile> createState() => _KillSwitchTileState();
@@ -152,7 +153,7 @@ class _KillSwitchTileState extends State<_KillSwitchTile> {
 
 // ─── DNS tile ─────────────────────────────────────────────────────────────────
 class _DnsTile extends StatefulWidget {
-  const _DnsTile({super.key});
+  const _DnsTile();
 
   @override
   State<_DnsTile> createState() => _DnsTileState();

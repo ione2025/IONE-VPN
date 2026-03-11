@@ -1,0 +1,4 @@
+storePassword=CHANGE_ME
+keyPassword=CHANGE_ME
+keyAlias=ione_vpn
+storeFile=../upload-keystore.jks
