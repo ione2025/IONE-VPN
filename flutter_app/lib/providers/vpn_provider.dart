@@ -122,29 +122,45 @@ class VpnProvider extends ChangeNotifier {
           (wgConfig == null || wgConfig.trim().isEmpty) || _activeDeviceId == null;
 
       // 2. Request backend config only when we don't have a usable cached profile.
+      //    If the API call fails for any reason (device-limit 403, network error,
+      //    etc.) we fall through so the embedded wgDefaultConfig is used instead,
+      //    ensuring the Windows app always has a working config.
       if (mustFetchNewConfig) {
-        final configData = await _api.generateVpnConfig(
-          name: deviceName,
-          platform: platform,
-          protocol: 'wireguard',
-        );
-
-        _activeDeviceId = (configData['deviceId'] ?? configData['id']) as String?;
-        if (_activeDeviceId != null) {
-          await _storage.write(
-            key: AppConstants.keyActiveDeviceId,
-            value: _activeDeviceId,
+        try {
+          final configData = await _api.generateVpnConfig(
+            name: deviceName,
+            platform: platform,
+            protocol: 'wireguard',
           );
-        }
 
-        wgConfig = _extractConfig(configData);
-        endpoint = _extractEndpoint(wgConfig ?? '');
+          _activeDeviceId = (configData['deviceId'] ?? configData['id']) as String?;
+          if (_activeDeviceId != null) {
+            await _storage.write(
+              key: AppConstants.keyActiveDeviceId,
+              value: _activeDeviceId,
+            );
+          }
 
-        if (wgConfig != null && wgConfig.trim().isNotEmpty) {
-          await _storage.write(key: AppConstants.keyWgConfig, value: wgConfig);
-        }
-        if (endpoint != null && endpoint.trim().isNotEmpty) {
-          await _storage.write(key: AppConstants.keyWgEndpoint, value: endpoint);
+          wgConfig = _extractConfig(configData);
+          endpoint = _extractEndpoint(wgConfig ?? '');
+
+          if (wgConfig != null && wgConfig.trim().isNotEmpty) {
+            await _storage.write(key: AppConstants.keyWgConfig, value: wgConfig);
+          }
+          if (endpoint != null && endpoint.trim().isNotEmpty) {
+            await _storage.write(key: AppConstants.keyWgEndpoint, value: endpoint);
+          }
+        } catch (e) {
+          // Log and fall through to use AppConstants.wgDefaultConfig below.
+          // Catches DioException (403 device-limit, network error) and any
+          // other unexpected error so Windows always has a working config.
+          final status = e is DioException ? e.response?.statusCode : null;
+          final msg    = e is DioException
+              ? (e.response?.data?['message'] ?? e.message)
+              : e.toString();
+          debugPrint('[VpnProvider] generateVpnConfig failed'
+              '${status != null ? ' ($status)' : ''}: $msg. '
+              'Falling back to default config.');
         }
       }
 

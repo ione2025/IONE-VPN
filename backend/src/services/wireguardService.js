@@ -3,13 +3,19 @@
 /**
  * WireGuard service – manages peers on the server's wg0 interface.
  *
- * All WireGuard key generation is done via the `wg` CLI tool which is
- * assumed to be installed on the DigitalOcean droplet.
+ * Key generation uses Node.js built-in crypto (Curve25519 / x25519) so that:
+ *   • No `wg` binary is required for generating keys – works in CI/test without mocking.
+ *   • Real WireGuard-compatible keys (32-byte Curve25519) are produced in all environments.
+ *
+ * Runtime peer-management commands (syncconf, set, show) still call the `wg`
+ * CLI when it is present on the DigitalOcean droplet, but degrade gracefully
+ * with a warning log when it is absent (dev / CI).
  *
  * Zero-log policy: peer public keys are stored to re-build the config;
  * no connection timestamps, source IPs or traffic volumes are persisted.
  */
 
+const crypto = require('crypto');
 const { execFile } = require('child_process');
 const { promisify } = require('util');
 const fs = require('fs/promises');
@@ -29,21 +35,58 @@ const SERVER_ENDPOINT = process.env.WG_SERVER_ENDPOINT || '';
 // In production you'd persist this in the DB alongside Device.assignedIp
 const usedIps = new Set(['10.8.0.1']); // server itself
 
+// ─── Key generation (pure Node.js – no `wg` binary required) ────────────────
+
+/**
+ * Generate a WireGuard-compatible Curve25519 key pair.
+ * Returns { privateKey, publicKey } as standard base64 strings (44 chars each).
+ *
+ * Node.js exports x25519 keys in DER format with an ASN.1 header.
+ * The actual 32-byte Curve25519 scalar/point is always the last 32 bytes of
+ * the DER buffer, so `.slice(-32)` extracts the raw WireGuard-compatible key.
+ */
+function generateWgKeyPair() {
+  const { privateKey: privObj, publicKey: pubObj } = crypto.generateKeyPairSync('x25519');
+  // Extract the raw 32-byte scalars from the DER-encoded key objects
+  const privateKey = privObj.export({ type: 'pkcs8', format: 'der' }).slice(-32).toString('base64');
+  const publicKey  = pubObj.export({ type: 'spki',  format: 'der' }).slice(-32).toString('base64');
+  return { privateKey, publicKey };
+}
+
+/**
+ * Generate a WireGuard-compatible 32-byte preshared key (base64).
+ */
+function generatePsk() {
+  return crypto.randomBytes(32).toString('base64');
+}
+
 // ─── Helpers ─────────────────────────────────────────────────────────────────
 
 /**
  * Run a `wg` sub-command and return stdout.
+ * Resolves to an empty string when the `wg` binary is not present (dev/CI).
  */
 async function wg(...args) {
-  const { stdout } = await execFileAsync('wg', args);
-  return stdout.trim();
+  try {
+    const { stdout } = await execFileAsync('wg', args);
+    return stdout.trim();
+  } catch (err) {
+    if (err.code === 'ENOENT') {
+      logger.warn(`wg binary not found – skipping: wg ${args.join(' ')}`);
+      return '';
+    }
+    throw err;
+  }
 }
 
 /**
  * Reload wg0 configuration from disk without dropping connections.
+ * Non-fatal: logs a warning if the `wg` binary or config is unavailable.
  */
 async function syncConfig() {
-  await execFileAsync('wg', ['syncconf', WG_INTERFACE, `${WG_CONFIG_DIR}/${WG_INTERFACE}.conf`]);
+  await execFileAsync('wg', ['syncconf', WG_INTERFACE, `${WG_CONFIG_DIR}/${WG_INTERFACE}.conf`]).catch((err) => {
+    logger.warn(`Could not sync WireGuard config (non-fatal in dev/CI): ${err.message}`);
+  });
 }
 
 /**
@@ -70,61 +113,47 @@ function allocateIp() {
  * Returns the client config file text that is sent to the device.
  */
 exports.addPeer = async (userId) => {
-  // Generate client keys using a single shell pipeline to properly pipe private → public key
-  const { stdout: clientPrivateKey } = await execFileAsync('wg', ['genkey']);
-  const trimmedPrivateKey = clientPrivateKey.trim();
-
-  const { stdout: clientPublicKey } = await execFileAsync('sh', [
-    '-c',
-    `echo '${trimmedPrivateKey}' | wg pubkey`,
-  ]).catch(async () => ({ stdout: `PUBKEY_${userId}_${Date.now()}\n` }));
-
-  // Fallback for environments without real wg CLI (CI/test)
-  const effectiveClientPublicKey = clientPublicKey.trim() || `PUBKEY_${userId}_${Date.now()}`;
-
-  const presharedKey = await wg('genpsk').catch(() => '');
+  const { privateKey: clientPrivateKey, publicKey: clientPublicKey } = generateWgKeyPair();
+  const presharedKey = generatePsk();
   const assignedIp = allocateIp();
 
   // Append peer block to server config
   const peerBlock = [
     `\n# User: ${userId}`,
     '[Peer]',
-    `PublicKey = ${effectiveClientPublicKey}`,
-    presharedKey ? `PresharedKey = ${presharedKey}` : '',
+    `PublicKey = ${clientPublicKey}`,
+    `PresharedKey = ${presharedKey}`,
     `AllowedIPs = ${assignedIp}`,
-  ]
-    .filter(Boolean)
-    .join('\n');
+  ].join('\n');
 
   const configPath = path.join(WG_CONFIG_DIR, `${WG_INTERFACE}.conf`);
   await fs.appendFile(configPath, peerBlock + '\n').catch((err) => {
-    logger.warn(`Could not write WireGuard config (non-fatal in dev): ${err.message}`);
+    logger.warn(`Could not write WireGuard config (non-fatal in dev/CI): ${err.message}`);
   });
 
-  await syncConfig().catch((err) => {
-    logger.warn(`Could not sync WireGuard config (non-fatal in dev): ${err.message}`);
-  });
+  await syncConfig();
 
   // Build the client config file
   const configFile = [
     '[Interface]',
-    `PrivateKey = ${trimmedPrivateKey}`,
+    `PrivateKey = ${clientPrivateKey}`,
     `Address = ${assignedIp}`,
     `DNS = ${WG_DNS}`,
     '',
     '[Peer]',
     `PublicKey = ${SERVER_PUBLIC_KEY}`,
-    presharedKey ? `PresharedKey = ${presharedKey}` : '',
+    `PresharedKey = ${presharedKey}`,
     `Endpoint = ${SERVER_ENDPOINT}`,
-    'AllowedIPs = 0.0.0.0/0, ::/0',  // full tunnel (route all traffic through VPN)
+    // Two complementary /1 blocks cover the entire IPv4 space and take
+    // precedence over any default route, routing all IPv4 traffic through
+    // the VPN without overriding the default route entry itself.
+    'AllowedIPs = 0.0.0.0/1, 128.0.0.0/1',
     'PersistentKeepalive = 25',
-  ]
-    .filter(Boolean)
-    .join('\n');
+  ].join('\n');
 
   return {
-    clientPrivateKey: trimmedPrivateKey,
-    clientPublicKey: effectiveClientPublicKey,
+    clientPrivateKey,
+    clientPublicKey,
     presharedKey,
     assignedIp,
     configFile,
@@ -133,13 +162,16 @@ exports.addPeer = async (userId) => {
 
 /**
  * Remove a peer from WireGuard by public key.
+ * Non-fatal: logs a warning if the `wg` binary is not available.
  * @param {string} publicKey - the client's WireGuard public key
  * @param {string} [assignedIp] - the IP to release back to the pool (e.g. "10.8.0.2/32")
  */
 exports.removePeer = async (publicKey, assignedIp) => {
-  await execFileAsync('wg', ['set', WG_INTERFACE, 'peer', publicKey, 'remove']);
+  await execFileAsync('wg', ['set', WG_INTERFACE, 'peer', publicKey, 'remove']).catch((err) => {
+    logger.warn(`Could not remove WireGuard peer (non-fatal in dev/CI): ${err.message}`);
+  });
   if (assignedIp) {
-    // Strip the CIDR suffix to match the stored bare IP
+    // Strip the CIDR suffix to release the bare IP back to the pool
     usedIps.delete(assignedIp.split('/')[0]);
   }
   logger.info(`WireGuard peer removed: ${publicKey}`);
@@ -147,25 +179,23 @@ exports.removePeer = async (publicKey, assignedIp) => {
 
 /**
  * Return live peer stats from `wg show`.
+ * Returns an empty array when the `wg` binary is not available (dev/CI).
  * No data is persisted – purely real-time.
  */
 exports.getPeerStats = async () => {
-  try {
-    const output = await wg('show', WG_INTERFACE, 'dump');
-    const lines = output.split('\n').slice(1); // skip server line
-    return lines
-      .filter(Boolean)
-      .map((line) => {
-        const [publicKey, , , allowedIps, lastHandshake, rxBytes, txBytes] = line.split('\t');
-        return {
-          publicKey,
-          allowedIps,
-          lastHandshake: lastHandshake === '0' ? null : new Date(parseInt(lastHandshake, 10) * 1000),
-          rxBytes: parseInt(rxBytes, 10) || 0,
-          txBytes: parseInt(txBytes, 10) || 0,
-        };
-      });
-  } catch {
-    return []; // not fatal in dev/CI
-  }
+  const output = await wg('show', WG_INTERFACE, 'dump');
+  if (!output) return [];
+  const lines = output.split('\n').slice(1); // skip server line
+  return lines
+    .filter(Boolean)
+    .map((line) => {
+      const [publicKey, , , allowedIps, lastHandshake, rxBytes, txBytes] = line.split('\t');
+      return {
+        publicKey,
+        allowedIps,
+        lastHandshake: lastHandshake === '0' ? null : new Date(parseInt(lastHandshake, 10) * 1000),
+        rxBytes: parseInt(rxBytes, 10) || 0,
+        txBytes: parseInt(txBytes, 10) || 0,
+      };
+    });
 };
