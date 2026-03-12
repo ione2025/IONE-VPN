@@ -42,24 +42,11 @@ exports.generateConfig = async (req, res, next) => {
       }).sort({ updatedAt: -1 });
     }
 
-<<<<<<< HEAD
-    // Enforce device limit only when adding a genuinely new device.
-    // When an existingDevice is found we are rotating/reconnecting that device,
-    // not consuming an additional slot, so the limit check is skipped entirely.
-    if (!existingDevice) {
-      const maxDevices = user.subscription?.maxDevices ?? MAX_DEVICES_FREE;
-      const activeDevices = await Device.countDocuments({ userId, isActive: true });
-      if (activeDevices >= maxDevices) {
-        return res.status(403).json({
-          message: `Device limit reached (${maxDevices}). Upgrade to premium for up to ${MAX_DEVICES_PREMIUM} devices.`,
-        });
-=======
     // Enforce device limit — but auto-replace the least-recently-used device
     // if the limit is hit, rather than blocking the user.  Free users can
     // always switch between devices seamlessly.
-    const maxDevices = user.subscription?.unlimitedBandwidth
-      ? MAX_DEVICES_PREMIUM
-      : MAX_DEVICES_FREE;
+    // user.subscription.maxDevices is set by the User model per subscription tier.
+    const maxDevices = user.subscription?.maxDevices ?? MAX_DEVICES_FREE;
     const activeDevices = await Device.countDocuments({ userId, isActive: true });
     const activeDevicesForLimit = existingDevice ? Math.max(0, activeDevices - 1) : activeDevices;
 
@@ -70,7 +57,6 @@ exports.generateConfig = async (req, res, next) => {
       if (lruDevice) {
         logger.info(`Device limit reached for user ${userId}; replacing LRU device ${lruDevice.deviceId}`);
         existingDevice = lruDevice;
->>>>>>> 6726475 (fix: VPN connection - remove device-limit blocker, fix IP pool, fix Android package path, fix FlutterSecureStorage, improve error handling)
       }
     }
 
