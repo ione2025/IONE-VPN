@@ -39,10 +39,14 @@ class VpnProvider extends ChangeNotifier {
   String? _webGeneratedConfig;
   String? _webEndpoint;
   Timer? _statsTimer;
+  Timer? _connectTimeoutTimer; // cancelled when stage reports connected/error
   DateTime? _connectedAt;
   StreamSubscription<VpnStage>? _stageSub;
   StreamSubscription<Map<String, dynamic>>? _trafficSub;
   bool _isInitialized = false;
+  // Set true when the user explicitly requests a disconnect so the stage
+  // listener doesn't treat the resulting 'disconnected' event as an error.
+  bool _disconnectRequested = false;
 
   // ─── Windows-specific traffic monitor ─────────────────────────────────────
   // One persistent PowerShell process; outputs "rxBytes,txBytes" every second.
@@ -148,10 +152,7 @@ class VpnProvider extends ChangeNotifier {
       final mustFetchNewConfig =
           (wgConfig == null || wgConfig.trim().isEmpty) || _activeDeviceId == null;
 
-      // 2. Request backend config only when we don't have a usable cached profile.
-      //    If the API call fails for any reason (device-limit 403, network error,
-      //    etc.) we fall through so the embedded wgDefaultConfig is used instead,
-      //    ensuring the Windows app always has a working config.
+      // 2. Request a fresh config from the backend when we have nothing cached.
       if (mustFetchNewConfig) {
         try {
           final configData = await _api.generateVpnConfig(
@@ -177,17 +178,25 @@ class VpnProvider extends ChangeNotifier {
           if (endpoint != null && endpoint.trim().isNotEmpty) {
             await _storage.write(key: AppConstants.keyWgEndpoint, value: endpoint);
           }
+        } on DioException catch (e) {
+          final errMsg = _readableApiError(e);
+          debugPrint('[VpnProvider] generateVpnConfig failed: $errMsg');
+          // On mobile the hardcoded fallback config has no registered server
+          // peer and will never connect. Surface the real error so the user
+          // knows exactly what went wrong.
+          if (!kIsWeb && !Platform.isWindows) {
+            _errorMessage = errMsg;
+            _setStatus(VpnStatus.error);
+            return;
+          }
+          // Windows: fall through and use wgDefaultConfig as fallback.
         } catch (e) {
-          // Log and fall through to use AppConstants.wgDefaultConfig below.
-          // Catches DioException (403 device-limit, network error) and any
-          // other unexpected error so Windows always has a working config.
-          final status = e is DioException ? e.response?.statusCode : null;
-          final msg    = e is DioException
-              ? (e.response?.data?['message'] ?? e.message)
-              : e.toString();
-          debugPrint('[VpnProvider] generateVpnConfig failed'
-              '${status != null ? ' ($status)' : ''}: $msg. '
-              'Falling back to default config.');
+          debugPrint('[VpnProvider] generateVpnConfig unexpected error: $e');
+          if (!kIsWeb && !Platform.isWindows) {
+            _errorMessage = 'Cannot reach VPN server. Check your connection.';
+            _setStatus(VpnStatus.error);
+            return;
+          }
         }
       }
 
@@ -230,9 +239,28 @@ class VpnProvider extends ChangeNotifier {
         providerBundleIdentifier: AppConstants.wgProviderBundleIdentifier,
       );
 
-      _connectedAt = DateTime.now();
-      _setStatus(VpnStatus.connected);
-      _startStatsTimer();
+      if (!kIsWeb && Platform.isWindows) {
+        // Windows: WireGuard service is synchronous — if startVpn() returned
+        // without throwing, the tunnel is up.
+        _connectedAt = DateTime.now();
+        _setStatus(VpnStatus.connected);
+        _startStatsTimer();
+      } else {
+        // Android / iOS: startVpn() only starts the VPN service; the actual
+        // WireGuard handshake happens asynchronously. Leave status as
+        // 'connecting' and let _onWireGuardStage drive the transition.
+        // Start a 30-second hard timeout in case stage events stop firing.
+        _connectTimeoutTimer?.cancel();
+        _connectTimeoutTimer = Timer(const Duration(seconds: 30), () {
+          if (_status == VpnStatus.connecting) {
+            debugPrint('[VpnProvider] Connection timed out after 30 s');
+            _disconnectRequested = true;
+            _wireguard.disconnect().catchError((_) {});
+            _errorMessage = 'VPN connection timed out. Check your internet and try again.';
+            _setStatus(VpnStatus.error);
+          }
+        });
+      }
       // Remember that we are connected so the app can auto-reconnect on next launch.
       unawaited(_storage.write(key: AppConstants.keyAutoConnect, value: 'true'));
     } on DioException catch (e) {
@@ -258,6 +286,7 @@ class VpnProvider extends ChangeNotifier {
     }
 
     _setStatus(VpnStatus.disconnecting);
+    _disconnectRequested = true; // suppress 'unexpected disconnect' error in stage listener
 
     try {
       await _wireguard.disconnect();
@@ -431,40 +460,49 @@ while (\$true) {
   void _onWireGuardStage(VpnStage stage) {
     switch (stage) {
       case VpnStage.connected:
+        _connectTimeoutTimer?.cancel();
+        _connectTimeoutTimer = null;
         _connectedAt ??= DateTime.now();
         _setStatus(VpnStatus.connected);
         _startStatsTimer();
+        unawaited(_storage.write(key: AppConstants.keyAutoConnect, value: 'true'));
         break;
       case VpnStage.connecting:
       case VpnStage.waitingConnection:
       case VpnStage.authenticating:
       case VpnStage.reconnect:
       case VpnStage.preparing:
-        _setStatus(VpnStatus.connecting);
+        if (_status != VpnStatus.connecting) _setStatus(VpnStatus.connecting);
         break;
       case VpnStage.disconnecting:
       case VpnStage.exiting:
-        _setStatus(VpnStatus.disconnecting);
+        if (_status != VpnStatus.disconnecting) _setStatus(VpnStatus.disconnecting);
         break;
       case VpnStage.disconnected:
       case VpnStage.noConnection:
+        _connectTimeoutTimer?.cancel();
+        _connectTimeoutTimer = null;
         _stopStatsTimer();
         _connectedAt = null;
         _stats = const ConnectionStats();
-        if (_status == VpnStatus.connecting) {
-          // Tunnel failed during connection attempt — show an actionable error.
-          _errorMessage =
-              stage == VpnStage.noConnection
-              ? 'No route to VPN server. Check your internet connection and try again.'
-              : 'VPN tunnel closed unexpectedly. Please try connecting again.';
+        final wasRequested = _disconnectRequested;
+        _disconnectRequested = false;
+        if (!wasRequested &&
+            (_status == VpnStatus.connecting || _status == VpnStatus.connected)) {
+          // Unexpected disconnect — could be tunnel failure, no route, wrong keys, etc.
+          _errorMessage = stage == VpnStage.noConnection
+              ? 'No route to VPN server. Check your internet and try again.'
+              : 'VPN tunnel disconnected. Please try connecting again.';
           _setStatus(VpnStatus.error);
         } else if (_status != VpnStatus.error) {
           _setStatus(VpnStatus.disconnected);
         }
         break;
       case VpnStage.denied:
+        _connectTimeoutTimer?.cancel();
+        _connectTimeoutTimer = null;
         _errorMessage =
-            'WireGuard permission denied. Run as Administrator on Windows, and approve VPN configuration on Android/iOS.';
+            'VPN permission denied. Please approve the VPN configuration dialog.';
         _setStatus(VpnStatus.error);
         break;
     }
@@ -603,6 +641,7 @@ while (\$true) {
   @override
   void dispose() {
     _statsTimer?.cancel();
+    _connectTimeoutTimer?.cancel();
     _stageSub?.cancel();
     _trafficSub?.cancel();
     _stopWinStatProcess();

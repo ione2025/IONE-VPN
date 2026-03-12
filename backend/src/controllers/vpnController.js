@@ -45,8 +45,11 @@ exports.generateConfig = async (req, res, next) => {
     // Enforce device limit — but auto-replace the least-recently-used device
     // if the limit is hit, rather than blocking the user.  Free users can
     // always switch between devices seamlessly.
-    // user.subscription.maxDevices is set by the User model per subscription tier.
-    const maxDevices = user.subscription?.maxDevices ?? MAX_DEVICES_FREE;
+    // NOTE: user.subscription.maxDevices defaults to 1 in DB for legacy users;
+    //       always derive the limit from the subscription tier instead so new
+    //       constants take effect without a DB migration.
+    const tier = user.subscription?.tier ?? 'free';
+    const maxDevices = tier === 'free' ? MAX_DEVICES_FREE : MAX_DEVICES_PREMIUM;
     const activeDevices = await Device.countDocuments({ userId, isActive: true });
     const activeDevicesForLimit = existingDevice ? Math.max(0, activeDevices - 1) : activeDevices;
 
