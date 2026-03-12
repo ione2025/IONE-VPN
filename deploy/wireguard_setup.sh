@@ -9,7 +9,6 @@ WG_IF="wg0"
 WG_DIR="/etc/wireguard"
 WG_PORT="51820"
 SERVER_SUBNET="10.8.0.1/24"
-WG_DNS="1.1.1.1"
 
 GREEN='\033[0;32m'; NC='\033[0m'
 info() { echo -e "${GREEN}[WG]${NC} $*"; }
@@ -54,7 +53,6 @@ cat > "$WG_DIR/$WG_IF.conf" <<EOF
 Address    = $SERVER_SUBNET
 ListenPort = $WG_PORT
 PrivateKey = $SERVER_PRIVATE_KEY
-DNS        = $WG_DNS
 
 # NAT – forward VPN traffic through the internet interface
 PostUp   = iptables -A FORWARD -i %i -j ACCEPT; \
