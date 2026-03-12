@@ -37,18 +37,37 @@ const usedIps = new Set(['10.8.0.1']); // server itself
 // ─── Key generation (pure Node.js – no `wg` binary required) ────────────────
 
 /**
- * Generate a WireGuard-compatible Curve25519 key pair.
- * Returns { privateKey, publicKey } as standard base64 strings (44 chars each).
+ * Generate a WireGuard key pair.
  *
- * Node.js exports x25519 keys in DER format with an ASN.1 header.
- * The actual 32-byte Curve25519 scalar/point is always the last 32 bytes of
- * the DER buffer, so `.slice(-32)` extracts the raw WireGuard-compatible key.
+ * In production, prefer native `wg` key generation to guarantee full
+ * interoperability with kernel/user-space WireGuard implementations.
+ * In CI/dev where `wg` might not exist, fall back to Node x25519.
  */
-function generateWgKeyPair() {
+async function generateWgKeyPair() {
+  try {
+    const { stdout: privOut } = await execFileAsync('wg', ['genkey']);
+    const privateKey = (privOut || '').trim();
+    if (!privateKey) throw new Error('wg genkey returned empty output');
+
+    const tmpPrivPath = path.join('/tmp', `wg.priv.${process.pid}.${Date.now()}`);
+    try {
+      await fs.writeFile(tmpPrivPath, `${privateKey}\n`, { mode: 0o600 });
+      const { stdout: pubOut } = await execFileAsync('sh', ['-lc', `cat ${tmpPrivPath} | wg pubkey`]);
+      const publicKey = (pubOut || '').trim();
+      if (!publicKey) throw new Error('wg pubkey returned empty output');
+      return { privateKey, publicKey };
+    } finally {
+      await fs.unlink(tmpPrivPath).catch(() => {});
+    }
+  } catch (err) {
+    if (err.code !== 'ENOENT') {
+      logger.warn(`Native wg key generation failed, falling back to Node x25519: ${err.message}`);
+    }
+  }
+
   const { privateKey: privObj, publicKey: pubObj } = crypto.generateKeyPairSync('x25519');
-  // Extract the raw 32-byte scalars from the DER-encoded key objects
   const privateKey = privObj.export({ type: 'pkcs8', format: 'der' }).slice(-32).toString('base64');
-  const publicKey  = pubObj.export({ type: 'spki',  format: 'der' }).slice(-32).toString('base64');
+  const publicKey = pubObj.export({ type: 'spki', format: 'der' }).slice(-32).toString('base64');
   return { privateKey, publicKey };
 }
 
@@ -220,7 +239,7 @@ exports.addPeer = async (userId) => {
     throw new Error('WireGuard server endpoint is missing. Set WG_SERVER_ENDPOINT or SERVER_IP.');
   }
 
-  const { privateKey: clientPrivateKey, publicKey: clientPublicKey } = generateWgKeyPair();
+  const { privateKey: clientPrivateKey, publicKey: clientPublicKey } = await generateWgKeyPair();
   const assignedIp = allocateIp();
 
   // Append peer block to server config
