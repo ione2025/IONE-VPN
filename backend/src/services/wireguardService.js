@@ -100,12 +100,29 @@ async function wg(...args) {
 
 /**
  * Reload wg0 configuration from disk without dropping connections.
- * Non-fatal: logs a warning if the `wg` binary or config is unavailable.
+ *
+ * Important: `wg syncconf` accepts only pure WireGuard keys. Our server file
+ * is a `wg-quick` config (contains Address/DNS/PostUp/PostDown), so we must
+ * strip it first via `wg-quick strip` and then sync the stripped file.
  */
 async function syncConfig() {
-  await execFileAsync('wg', ['syncconf', WG_INTERFACE, `${WG_CONFIG_DIR}/${WG_INTERFACE}.conf`]).catch((err) => {
-    logger.warn(`Could not sync WireGuard config (non-fatal in dev/CI): ${err.message}`);
-  });
+  const configPath = `${WG_CONFIG_DIR}/${WG_INTERFACE}.conf`;
+  const tmpPath = path.join('/tmp', `${WG_INTERFACE}.sync.${process.pid}.${Date.now()}.conf`);
+
+  try {
+    const { stdout } = await execFileAsync('wg-quick', ['strip', configPath]);
+    await fs.writeFile(tmpPath, stdout, { mode: 0o600 });
+    await execFileAsync('wg', ['syncconf', WG_INTERFACE, tmpPath]);
+  } catch (err) {
+    if (err.code === 'ENOENT') {
+      logger.warn('wg/wg-quick binary not found - skipping syncconf (dev/CI)');
+      return;
+    }
+    const details = err.stderr ? `${err.message}\n${err.stderr}` : err.message;
+    throw new Error(`Could not sync WireGuard config: ${details}`);
+  } finally {
+    await fs.unlink(tmpPath).catch(() => {});
+  }
 }
 
 /**
