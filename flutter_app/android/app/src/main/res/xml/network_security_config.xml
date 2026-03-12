@@ -1,4 +1,10 @@
 <?xml version="1.0" encoding="utf-8"?>
+<!--
+  Network security config for IONE VPN.
+  Allows cleartext (HTTP) traffic to the backend server on all Android
+  versions including Samsung Knox-hardened devices that ignore the
+  android:usesCleartextTraffic="true" application attribute.
+-->
 <network-security-config>
     <domain-config cleartextTrafficPermitted="true">
         <domain includeSubdomains="false">178.128.107.176</domain>

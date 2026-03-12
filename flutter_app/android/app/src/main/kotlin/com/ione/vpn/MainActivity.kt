@@ -1,4 +1,4 @@
-package com.example.ione_vpn
+package com.ione.vpn
 
 import io.flutter.embedding.android.FlutterActivity
 

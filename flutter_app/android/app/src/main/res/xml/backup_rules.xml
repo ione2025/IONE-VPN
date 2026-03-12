@@ -1,0 +1,11 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+  Android < 12 full-backup exclusion rules.
+  Excludes flutter_secure_storage files from backup. If these are backed up
+  without the corresponding Android Keystore entries (which are never backed up)
+  the app crashes on first launch after a restore because it cannot decrypt
+  the stored values.
+-->
+<full-backup-content>
+    <exclude domain="sharedpref" path="FlutterSecureStorage"/>
+</full-backup-content>

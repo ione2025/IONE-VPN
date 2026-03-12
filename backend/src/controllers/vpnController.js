@@ -6,8 +6,8 @@ const wireguardService = require('../services/wireguardService');
 const openvpnService = require('../services/openvpnService');
 const logger = require('../config/logger');
 
-const MAX_DEVICES_FREE = 1;
-const MAX_DEVICES_PREMIUM = 10;
+const MAX_DEVICES_FREE = 5;
+const MAX_DEVICES_PREMIUM = 20;
 
 // ─── Generate VPN config for a new device ────────────────────────────────────
 exports.generateConfig = async (req, res, next) => {
@@ -21,6 +21,10 @@ exports.generateConfig = async (req, res, next) => {
     const userId = req.user.id;
     const user = req.user.doc;
 
+    // Find best existing device to reuse:
+    // 1. Exact match (same name + platform + protocol)
+    // 2. Same platform + protocol
+    // 3. Any active device for this user (cross-platform replacement)
     let existingDevice = await Device.findOne({
       userId,
       name,
@@ -38,6 +42,7 @@ exports.generateConfig = async (req, res, next) => {
       }).sort({ updatedAt: -1 });
     }
 
+<<<<<<< HEAD
     // Enforce device limit only when adding a genuinely new device.
     // When an existingDevice is found we are rotating/reconnecting that device,
     // not consuming an additional slot, so the limit check is skipped entirely.
@@ -48,6 +53,24 @@ exports.generateConfig = async (req, res, next) => {
         return res.status(403).json({
           message: `Device limit reached (${maxDevices}). Upgrade to premium for up to ${MAX_DEVICES_PREMIUM} devices.`,
         });
+=======
+    // Enforce device limit — but auto-replace the least-recently-used device
+    // if the limit is hit, rather than blocking the user.  Free users can
+    // always switch between devices seamlessly.
+    const maxDevices = user.subscription?.unlimitedBandwidth
+      ? MAX_DEVICES_PREMIUM
+      : MAX_DEVICES_FREE;
+    const activeDevices = await Device.countDocuments({ userId, isActive: true });
+    const activeDevicesForLimit = existingDevice ? Math.max(0, activeDevices - 1) : activeDevices;
+
+    if (!existingDevice && activeDevicesForLimit >= maxDevices) {
+      // Auto-replace the oldest (least recently used) device instead of blocking.
+      const lruDevice = await Device.findOne({ userId, isActive: true })
+        .sort({ lastConnectedAt: 1, updatedAt: 1 });
+      if (lruDevice) {
+        logger.info(`Device limit reached for user ${userId}; replacing LRU device ${lruDevice.deviceId}`);
+        existingDevice = lruDevice;
+>>>>>>> 6726475 (fix: VPN connection - remove device-limit blocker, fix IP pool, fix Android package path, fix FlutterSecureStorage, improve error handling)
       }
     }
 

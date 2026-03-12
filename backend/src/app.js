@@ -60,6 +60,10 @@ const PORT = process.env.PORT || 3000;
 async function start() {
   await connectDB();
   await connectRedis();
+  // Rebuild the WireGuard IP pool from existing DB records so allocation
+  // is correct after server restarts (usedIps is otherwise in-memory only).
+  const wireguardService = require('./services/wireguardService');
+  await wireguardService.rebuildUsedIps();
   app.listen(PORT, () => {
     logger.info(`IONE VPN API running on port ${PORT} [${process.env.NODE_ENV}]`);
   });

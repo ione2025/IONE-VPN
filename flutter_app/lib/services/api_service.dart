@@ -8,7 +8,12 @@ import '../constants/app_constants.dart';
 /// Automatically attaches the Bearer token and handles 401 token refresh.
 class ApiService {
   late final Dio _dio;
-  final FlutterSecureStorage _storage = const FlutterSecureStorage();
+  final FlutterSecureStorage _storage = const FlutterSecureStorage(
+    aOptions: AndroidOptions(
+      encryptedSharedPreferences: true,
+      resetOnError: true,
+    ),
+  );
 
   ApiService() {
     _dio = Dio(BaseOptions(

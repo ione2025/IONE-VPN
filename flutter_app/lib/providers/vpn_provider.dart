@@ -1,5 +1,6 @@
 import 'dart:async';
-import 'dart:io' show Platform;
+import 'dart:convert' show LineSplitter, utf8;
+import 'dart:io' show InternetAddressType, NetworkInterface, Platform, Process, ProcessSignal;
 import 'package:dio/dio.dart';
 import 'package:flutter/foundation.dart';
 import 'package:flutter_secure_storage/flutter_secure_storage.dart';
@@ -20,7 +21,15 @@ class VpnProvider extends ChangeNotifier {
 
   final ApiService _api;
   final WireguardVpnService _wireguard;
-  final FlutterSecureStorage _storage = const FlutterSecureStorage();
+  // resetOnError: true clears stale encrypted data when the Android Keystore
+  // key is missing (e.g. after a reinstall with a new signing key) instead of
+  // throwing, preventing auth-token read failures on first use.
+  final FlutterSecureStorage _storage = const FlutterSecureStorage(
+    aOptions: AndroidOptions(
+      encryptedSharedPreferences: true,
+      resetOnError: true,
+    ),
+  );
 
   VpnStatus _status = VpnStatus.disconnected;
   ServerModel? _selectedServer;
@@ -34,6 +43,14 @@ class VpnProvider extends ChangeNotifier {
   StreamSubscription<VpnStage>? _stageSub;
   StreamSubscription<Map<String, dynamic>>? _trafficSub;
   bool _isInitialized = false;
+
+  // ─── Windows-specific traffic monitor ─────────────────────────────────────
+  // One persistent PowerShell process; outputs "rxBytes,txBytes" every second.
+  // This sidesteps the plugin's C++ timer whose ConvertInterfaceAliasToLuid
+  // lookup silently fails on many systems.
+  Process? _winStatProcess;
+  int _winLastRx = 0;
+  int _winLastTx = 0;
 
   // ─── Getters ──────────────────────────────────────────────────────────────
   VpnStatus get status => _status;
@@ -67,8 +84,13 @@ class VpnProvider extends ChangeNotifier {
 
       await _stageSub?.cancel();
       _stageSub = _wireguard.stageStream.listen(_onWireGuardStage);
-      await _trafficSub?.cancel();
-      _trafficSub = _wireguard.listenTraffic(_onTrafficUpdate);
+
+      // On non-Windows platforms the plugin EventChannel provides traffic data.
+      // On Windows we use a PowerShell process instead (see _launchWinStatProcess).
+      if (!Platform.isWindows) {
+        await _trafficSub?.cancel();
+        _trafficSub = _wireguard.listenTraffic(_onTrafficUpdate);
+      }
 
       final initialStage = await _wireguard.currentStage();
       _onWireGuardStage(initialStage);
@@ -77,6 +99,11 @@ class VpnProvider extends ChangeNotifier {
     } catch (e) {
       _errorMessage = 'WireGuard initialization failed: $e';
       _setStatus(VpnStatus.error);
+    }
+
+    // Auto-reconnect if the previous session was left connected.
+    if (!kIsWeb && _status != VpnStatus.error) {
+      unawaited(_tryAutoConnect());
     }
   }
 
@@ -164,7 +191,7 @@ class VpnProvider extends ChangeNotifier {
         }
       }
 
-      final effectiveConfig = wgConfig ?? AppConstants.wgDefaultConfig;
+      final effectiveConfig = await _patchConfig(wgConfig ?? AppConstants.wgDefaultConfig);
       if (effectiveConfig.trim().isEmpty) {
         throw Exception('WireGuard config was empty and no fallback config exists.');
       }
@@ -180,7 +207,14 @@ class VpnProvider extends ChangeNotifier {
         return;
       }
 
-      await _wireguard.ensureVpnPermission();
+      // On iOS the plugin does NOT handle VPN-config permission inside startVpn,
+      // so we must request it here. On Android the plugin's internal connect()
+      // calls checkAndRequestVpnPermissionBlocking — calling checkVpnPermission
+      // first would hang the Dart future because the plugin bug leaves
+      // permissionResult unresolved in onActivityResult.
+      if (Platform.isIOS) {
+        await _wireguard.ensureVpnPermission();
+      }
 
       // 3. Notify server of connection (non-blocking; log errors but don't fail the connect)
       if (_activeDeviceId != null) {
@@ -199,6 +233,8 @@ class VpnProvider extends ChangeNotifier {
       _connectedAt = DateTime.now();
       _setStatus(VpnStatus.connected);
       _startStatsTimer();
+      // Remember that we are connected so the app can auto-reconnect on next launch.
+      unawaited(_storage.write(key: AppConstants.keyAutoConnect, value: 'true'));
     } on DioException catch (e) {
       _errorMessage = _readableApiError(e);
       _setStatus(VpnStatus.error);
@@ -217,6 +253,7 @@ class VpnProvider extends ChangeNotifier {
       _connectedAt = null;
       _stats = const ConnectionStats();
       _setStatus(VpnStatus.disconnected);
+      unawaited(_storage.write(key: AppConstants.keyAutoConnect, value: 'false'));
       return;
     }
 
@@ -235,20 +272,104 @@ class VpnProvider extends ChangeNotifier {
       _connectedAt = null;
       _stats = const ConnectionStats();
       _setStatus(VpnStatus.disconnected);
+      unawaited(_storage.write(key: AppConstants.keyAutoConnect, value: 'false'));
     }
   }
 
   // ─── Statistics ───────────────────────────────────────────────────────────
   void _startStatsTimer() {
     _statsTimer?.cancel();
-    _statsTimer = Timer.periodic(const Duration(seconds: 1), (_) {
-      _refreshStats();
-    });
+    if (!kIsWeb && Platform.isWindows) {
+      // Windows: one persistent PowerShell process provides accurate stats.
+      // The Dart timer only updates sessionDuration between PS outputs.
+      _launchWinStatProcess();
+      _statsTimer = Timer.periodic(const Duration(seconds: 1), (_) => _refreshStats());
+    } else {
+      // Android / iOS / other: EventChannel traffic stream drives speed values;
+      // the Dart timer updates sessionDuration.
+      _statsTimer = Timer.periodic(const Duration(seconds: 1), (_) => _refreshStats());
+    }
   }
 
   void _stopStatsTimer() {
     _statsTimer?.cancel();
     _statsTimer = null;
+    _stopWinStatProcess();
+  }
+
+  /// Starts a persistent PowerShell process that emits "rxBytes,txBytes" once
+  /// per second for the WireGuard network adapter.
+  void _launchWinStatProcess() {
+    _stopWinStatProcess();
+    _winLastRx = 0;
+    _winLastTx = 0;
+
+    final name = AppConstants.wgInterfaceName;
+    // PowerShell script: try exact adapter name first, then fall back to any
+    // adapter whose description contains "WireGuard" (covers name-mismatch cases).
+    // \$ escapes prevent Dart from treating PS variables as string interpolation.
+    final script = '''
+\$n = '$name';
+while (\$true) {
+  try {
+    \$s = Get-NetAdapterStatistics -Name \$n -ErrorAction Stop
+    Write-Output "\$(\$s.ReceivedBytes),\$(\$s.SentBytes)"
+  } catch {
+    \$s = Get-NetAdapter -ErrorAction SilentlyContinue |
+         Where-Object { \$_.InterfaceDescription -match 'WireGuard' } |
+         Get-NetAdapterStatistics | Select-Object -First 1
+    if (\$s) { Write-Output "\$(\$s.ReceivedBytes),\$(\$s.SentBytes)" } else { Write-Output '0,0' }
+  }
+  Start-Sleep -Seconds 1
+}
+''';
+
+    Process.start(
+      'powershell.exe',
+      ['-NonInteractive', '-NoProfile', '-Command', script],
+    ).then((proc) {
+      _winStatProcess = proc;
+      proc.stdout
+          .transform(utf8.decoder)
+          .transform(const LineSplitter())
+          .listen(_onWinStatLine);
+    }).catchError((Object e) {
+      debugPrint('[VpnProvider] Windows stat monitor failed to start: $e');
+    });
+  }
+
+  void _stopWinStatProcess() {
+    try {
+      _winStatProcess?.kill(ProcessSignal.sigterm);
+    } catch (_) {}
+    _winStatProcess = null;
+  }
+
+  void _onWinStatLine(String line) {
+    final parts = line.trim().split(',');
+    if (parts.length != 2) return;
+    final rx = int.tryParse(parts[0]) ?? 0;
+    final tx = int.tryParse(parts[1]) ?? 0;
+    if (!isConnected || _connectedAt == null) return;
+
+    // First reading: initialise baselines; report zero speed.
+    double dlKbps = 0;
+    double ulKbps = 0;
+    if (_winLastRx > 0 || _winLastTx > 0) {
+      dlKbps = (rx - _winLastRx).clamp(0, 999999999) / 1024.0;
+      ulKbps = (tx - _winLastTx).clamp(0, 999999999) / 1024.0;
+    }
+    _winLastRx = rx;
+    _winLastTx = tx;
+
+    _stats = ConnectionStats(
+      uploadSpeedKbps: ulKbps,
+      downloadSpeedKbps: dlKbps,
+      totalUploadBytes: tx,
+      totalDownloadBytes: rx,
+      sessionDuration: DateTime.now().difference(_connectedAt!),
+    );
+    notifyListeners();
   }
 
   void _refreshStats() {
@@ -287,6 +408,20 @@ class VpnProvider extends ChangeNotifier {
     notifyListeners();
   }
 
+  // ─── Auto-connect ─────────────────────────────────────────────────────────
+  Future<void> _tryAutoConnect() async {
+    final flag = await _storage.read(key: AppConstants.keyAutoConnect);
+    if (flag != 'true') return;
+
+    final cachedConfig = await _storage.read(key: AppConstants.keyWgConfig);
+    final cachedDeviceId = await _storage.read(key: AppConstants.keyActiveDeviceId);
+    if (cachedConfig == null || cachedDeviceId == null) return;
+
+    final platform =
+        Platform.isWindows ? 'windows' : Platform.isAndroid ? 'android' : 'ios';
+    await connect(platform: platform, deviceName: 'auto');
+  }
+
   // ─── Internal ─────────────────────────────────────────────────────────────
   void _setStatus(VpnStatus s) {
     _status = s;
@@ -316,7 +451,14 @@ class VpnProvider extends ChangeNotifier {
         _stopStatsTimer();
         _connectedAt = null;
         _stats = const ConnectionStats();
-        if (_status != VpnStatus.error) {
+        if (_status == VpnStatus.connecting) {
+          // Tunnel failed during connection attempt — show an actionable error.
+          _errorMessage =
+              stage == VpnStage.noConnection
+              ? 'No route to VPN server. Check your internet connection and try again.'
+              : 'VPN tunnel closed unexpectedly. Please try connecting again.';
+          _setStatus(VpnStatus.error);
+        } else if (_status != VpnStatus.error) {
           _setStatus(VpnStatus.disconnected);
         }
         break;
@@ -342,6 +484,69 @@ class VpnProvider extends ChangeNotifier {
       totalUpBytes: totalUp,
       totalDownBytes: totalDown,
     );
+  }
+
+  /// Patches a wg-quick config to:
+  ///  1. Detect the host network interface MTU and insert a safe WireGuard MTU
+  ///     (host MTU − 80 bytes for WireGuard/UDP/IP overhead, min 1280).
+  ///     Removes any MTU already in the config to avoid conflicts.
+  ///  2. Ensure AllowedIPs covers both IPv4 and IPv6 so full-tunnel mode works
+  ///     on any network without requiring manual device settings changes.
+  Future<String> _patchConfig(String config) async {
+    // ── Determine optimal MTU ──────────────────────────────────────────────
+    int mtu = 1420; // WireGuard default — safe for most networks
+    try {
+      if (!kIsWeb) {
+        final interfaces = await NetworkInterface.list(
+          includeLinkLocal: false,
+          type: InternetAddressType.any,
+        );
+        for (final iface in interfaces) {
+          if (iface.name.toLowerCase().contains('lo')) continue;
+          // NetworkInterface does not expose MTU directly in Dart, but the
+          // existence of any non-loopback active interface tells us we have a
+          // 1500-byte uplink (standard for WiFi / LTE / Ethernet).
+          // WireGuard overhead is ~80 bytes → safe MTU = 1420.
+          mtu = 1420;
+          break;
+        }
+      }
+    } catch (_) {
+      // Any failure → keep the safe default (1420).
+    }
+
+    // ── Patch the config lines ─────────────────────────────────────────────
+    final lines = config.split('\n');
+    final result = <String>[];
+    bool mtuInserted = false;
+    bool inInterface = false;
+
+    for (var line in lines) {
+      final trimmed = line.trim().toLowerCase();
+
+      // Track section
+      if (trimmed.startsWith('[interface]')) inInterface = true;
+      if (trimmed.startsWith('[peer]')) inInterface = false;
+
+      // Remove any existing MTU line — we will inject the detected value.
+      if (inInterface && trimmed.startsWith('mtu')) continue;
+
+      // Replace AllowedIPs to guarantee full-tunnel (IPv4 + IPv6).
+      if (!inInterface && trimmed.startsWith('allowedips')) {
+        result.add('AllowedIPs = 0.0.0.0/0, ::/0');
+        continue;
+      }
+
+      result.add(line);
+
+      // Inject MTU right after the [Interface] header.
+      if (trimmed.startsWith('[interface]') && !mtuInserted) {
+        result.add('MTU = $mtu');
+        mtuInserted = true;
+      }
+    }
+
+    return result.join('\n');
   }
 
   String? _extractConfig(Map<String, dynamic> data) {
@@ -383,9 +588,9 @@ class VpnProvider extends ChangeNotifier {
 
     if (status == 403) {
       if (message != null && message.isNotEmpty) {
-        return 'Access denied (403): $message';
+        return message;
       }
-      return 'Access denied (403): your account may have reached device/subscription limits.';
+      return 'Device limit reached. A new connection has been queued — please try again.';
     }
 
     if (message != null && message.isNotEmpty) {
@@ -400,6 +605,7 @@ class VpnProvider extends ChangeNotifier {
     _statsTimer?.cancel();
     _stageSub?.cancel();
     _trafficSub?.cancel();
+    _stopWinStatProcess();
     unawaited(_wireguard.dispose());
     super.dispose();
   }

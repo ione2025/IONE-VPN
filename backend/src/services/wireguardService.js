@@ -31,8 +31,7 @@ const WG_DNS = process.env.WG_DNS || '1.1.1.1';
 const SERVER_PUBLIC_KEY = process.env.WG_SERVER_PUBLIC_KEY || '';
 const SERVER_ENDPOINT = process.env.WG_SERVER_ENDPOINT || '';
 
-// Track assigned IPs in memory (backed by the config file on disk)
-// In production you'd persist this in the DB alongside Device.assignedIp
+// Track assigned IPs in memory (rebuilt from DB on startup via rebuildUsedIps)
 const usedIps = new Set(['10.8.0.1']); // server itself
 
 // ─── Key generation (pure Node.js – no `wg` binary required) ────────────────
@@ -59,6 +58,26 @@ function generateWgKeyPair() {
 function generatePsk() {
   return crypto.randomBytes(32).toString('base64');
 }
+
+/**
+ * Rebuild the in-memory usedIps set from all active Device records.
+ * Call once on application start so IP allocation is correct after restarts.
+ */
+exports.rebuildUsedIps = async () => {
+  try {
+    const Device = require('../models/Device');
+    const devices = await Device.find({ isActive: true, assignedIp: { $exists: true, $ne: null } }, 'assignedIp');
+    for (const d of devices) {
+      if (d.assignedIp) {
+        // assignedIp is stored as "10.8.0.2/32" — strip the CIDR
+        usedIps.add(d.assignedIp.split('/')[0]);
+      }
+    }
+    logger.info(`WireGuard IP pool rebuilt: ${usedIps.size} IPs in use`);
+  } catch (err) {
+    logger.warn(`Could not rebuild WireGuard IP pool: ${err.message}`);
+  }
+};
 
 // ─── Helpers ─────────────────────────────────────────────────────────────────
 
