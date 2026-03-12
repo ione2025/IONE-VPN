@@ -21,10 +21,10 @@ exports.generateConfig = async (req, res, next) => {
     const userId = req.user.id;
     const user = req.user.doc;
 
-    // Find best existing device to reuse:
-    // 1. Exact match (same name + platform + protocol)
-    // 2. Same platform + protocol
-    // 3. Any active device for this user (cross-platform replacement)
+    // Reuse only an exact same device (same name + platform + protocol).
+    // Do NOT reuse arbitrary active devices across platforms, because that
+    // rotates peer keys/PSKs and can invalidate another currently connected
+    // device unexpectedly.
     let existingDevice = await Device.findOne({
       userId,
       name,
@@ -32,15 +32,6 @@ exports.generateConfig = async (req, res, next) => {
       protocol,
       isActive: true,
     }).sort({ updatedAt: -1 });
-
-    if (!existingDevice) {
-      existingDevice = await Device.findOne({
-        userId,
-        platform,
-        protocol,
-        isActive: true,
-      }).sort({ updatedAt: -1 });
-    }
 
     // Enforce device limit — but auto-replace the least-recently-used device
     // if the limit is hit, rather than blocking the user.  Free users can
