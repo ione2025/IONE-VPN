@@ -149,8 +149,9 @@ class VpnProvider extends ChangeNotifier {
         wgConfig = await _storage.read(key: AppConstants.keyWgConfig);
       }
 
-      final mustFetchNewConfig =
-          (wgConfig == null || wgConfig.trim().isEmpty) || _activeDeviceId == null;
+        // Always refresh config on connect so key/endpoint rotations on the
+        // server are picked up immediately across all clients.
+        final mustFetchNewConfig = wgQuickConfigOverride == null;
 
       // 2. Request a fresh config from the backend when we have nothing cached.
       if (mustFetchNewConfig) {

@@ -126,6 +126,37 @@ async function syncConfig() {
 }
 
 /**
+ * Return the server public key used in generated client configs.
+ * Prefer the live key file on the server when available to avoid stale .env
+ * values after key rotation.
+ */
+async function getServerPublicKey() {
+  const keyPath = path.join(WG_CONFIG_DIR, 'publickey');
+  try {
+    const key = (await fs.readFile(keyPath, 'utf8')).trim();
+    if (key) return key;
+  } catch (_) {
+    // Fall back to env below.
+  }
+  return (SERVER_PUBLIC_KEY || '').trim();
+}
+
+/**
+ * Return server endpoint for generated client configs.
+ * Prefer explicit WG_SERVER_ENDPOINT; otherwise derive from SERVER_IP.
+ */
+function getServerEndpoint() {
+  const explicit = (SERVER_ENDPOINT || '').trim();
+  if (explicit) return explicit;
+
+  const serverIp = (process.env.SERVER_IP || '').trim();
+  if (!serverIp) return '';
+
+  const port = (process.env.WG_PORT || '51820').trim();
+  return `${serverIp}:${port}`;
+}
+
+/**
  * Parse the base IP of the subnet and return the next free /32 address.
  */
 function allocateIp() {
@@ -149,6 +180,16 @@ function allocateIp() {
  * Returns the client config file text that is sent to the device.
  */
 exports.addPeer = async (userId) => {
+  const serverPublicKey = await getServerPublicKey();
+  const serverEndpoint = getServerEndpoint();
+
+  if (!serverPublicKey) {
+    throw new Error('WireGuard server public key is missing. Set WG_SERVER_PUBLIC_KEY or /etc/wireguard/publickey.');
+  }
+  if (!serverEndpoint) {
+    throw new Error('WireGuard server endpoint is missing. Set WG_SERVER_ENDPOINT or SERVER_IP.');
+  }
+
   const { privateKey: clientPrivateKey, publicKey: clientPublicKey } = generateWgKeyPair();
   const presharedKey = generatePsk();
   const assignedIp = allocateIp();
@@ -177,9 +218,9 @@ exports.addPeer = async (userId) => {
     `DNS = ${WG_DNS}`,
     '',
     '[Peer]',
-    `PublicKey = ${SERVER_PUBLIC_KEY}`,
+    `PublicKey = ${serverPublicKey}`,
     `PresharedKey = ${presharedKey}`,
-    `Endpoint = ${SERVER_ENDPOINT}`,
+    `Endpoint = ${serverEndpoint}`,
     // Two complementary /1 blocks cover the entire IPv4 space and take
     // precedence over any default route, routing all IPv4 traffic through
     // the VPN without overriding the default route entry itself.
