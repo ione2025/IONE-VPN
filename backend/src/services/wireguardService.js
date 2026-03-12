@@ -126,6 +126,43 @@ async function syncConfig() {
 }
 
 /**
+ * Remove a peer block by public key from the persistent wg0.conf file.
+ * This keeps disk config in sync with runtime state so old peers do not
+ * come back on restart/sync.
+ */
+async function removePeerFromConfig(publicKey) {
+  const configPath = path.join(WG_CONFIG_DIR, `${WG_INTERFACE}.conf`);
+  let content;
+  try {
+    content = await fs.readFile(configPath, 'utf8');
+  } catch (err) {
+    logger.warn(`Could not read WireGuard config for peer removal: ${err.message}`);
+    return;
+  }
+
+  const peerBlockRegex = /(?:^|\n)(?:# User:.*\n)?\[Peer\][\s\S]*?(?=\n(?:# User:.*\n)?\[Peer\]|\s*$)/g;
+  const peerBlocks = content.match(peerBlockRegex) || [];
+  if (peerBlocks.length === 0) return;
+
+  const keptBlocks = peerBlocks.filter((block) => {
+    const lines = block.split('\n');
+    const pubLine = lines.find((line) => line.trim().toLowerCase().startsWith('publickey'));
+    if (!pubLine) return true;
+    const candidate = pubLine.split('=').slice(1).join('=').trim();
+    return candidate !== publicKey;
+  });
+
+  if (keptBlocks.length === peerBlocks.length) return;
+
+  const baseConfig = content.replace(peerBlockRegex, '').trimEnd();
+  const rebuilt = [baseConfig, ...keptBlocks.map((b) => b.trim())]
+    .filter((s) => s && s.length > 0)
+    .join('\n\n') + '\n';
+
+  await fs.writeFile(configPath, rebuilt, { mode: 0o600 });
+}
+
+/**
  * Return the server public key used in generated client configs.
  * Prefer the live key file on the server when available to avoid stale .env
  * values after key rotation.
@@ -221,10 +258,8 @@ exports.addPeer = async (userId) => {
     `PublicKey = ${serverPublicKey}`,
     `PresharedKey = ${presharedKey}`,
     `Endpoint = ${serverEndpoint}`,
-    // Two complementary /1 blocks cover the entire IPv4 space and take
-    // precedence over any default route, routing all IPv4 traffic through
-    // the VPN without overriding the default route entry itself.
-    'AllowedIPs = 0.0.0.0/1, 128.0.0.0/1',
+    // Route all IPv4 traffic through the VPN.
+    'AllowedIPs = 0.0.0.0/0',
     'PersistentKeepalive = 25',
   ].join('\n');
 
@@ -246,6 +281,12 @@ exports.addPeer = async (userId) => {
 exports.removePeer = async (publicKey, assignedIp) => {
   await execFileAsync('wg', ['set', WG_INTERFACE, 'peer', publicKey, 'remove']).catch((err) => {
     logger.warn(`Could not remove WireGuard peer (non-fatal in dev/CI): ${err.message}`);
+  });
+  await removePeerFromConfig(publicKey).catch((err) => {
+    logger.warn(`Could not remove peer from WireGuard config file: ${err.message}`);
+  });
+  await syncConfig().catch((err) => {
+    logger.warn(`Could not sync WireGuard config after peer removal: ${err.message}`);
   });
   if (assignedIp) {
     // Strip the CIDR suffix to release the bare IP back to the pool
