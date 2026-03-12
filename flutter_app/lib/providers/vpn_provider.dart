@@ -529,11 +529,11 @@ while (\$true) {
   ///  1. Detect the host network interface MTU and insert a safe WireGuard MTU
   ///     (host MTU − 80 bytes for WireGuard/UDP/IP overhead, min 1280).
   ///     Removes any MTU already in the config to avoid conflicts.
-  ///  2. Ensure AllowedIPs covers both IPv4 and IPv6 so full-tunnel mode works
-  ///     on any network without requiring manual device settings changes.
+  ///  2. Force IPv4-only full tunnel to avoid IPv6 route blackholes on
+  ///     servers that are not configured for IPv6 forwarding/NAT.
   Future<String> _patchConfig(String config) async {
     // ── Determine optimal MTU ──────────────────────────────────────────────
-    int mtu = 1420; // WireGuard default — safe for most networks
+    int mtu = 1280; // conservative default for mobile/carrier networks
     try {
       if (!kIsWeb) {
         final interfaces = await NetworkInterface.list(
@@ -543,15 +543,13 @@ while (\$true) {
         for (final iface in interfaces) {
           if (iface.name.toLowerCase().contains('lo')) continue;
           // NetworkInterface does not expose MTU directly in Dart, but the
-          // existence of any non-loopback active interface tells us we have a
-          // 1500-byte uplink (standard for WiFi / LTE / Ethernet).
-          // WireGuard overhead is ~80 bytes → safe MTU = 1420.
-          mtu = 1420;
+          // Keep a conservative MTU to avoid PMTU/fragmentation blackholes.
+          mtu = 1280;
           break;
         }
       }
     } catch (_) {
-      // Any failure → keep the safe default (1420).
+      // Any failure → keep the safe default (1280).
     }
 
     // ── Patch the config lines ─────────────────────────────────────────────
@@ -570,9 +568,9 @@ while (\$true) {
       // Remove any existing MTU line — we will inject the detected value.
       if (inInterface && trimmed.startsWith('mtu')) continue;
 
-      // Replace AllowedIPs to guarantee full-tunnel (IPv4 + IPv6).
+      // Replace AllowedIPs to guarantee full-tunnel over IPv4 only.
       if (!inInterface && trimmed.startsWith('allowedips')) {
-        result.add('AllowedIPs = 0.0.0.0/0, ::/0');
+        result.add('AllowedIPs = 0.0.0.0/0');
         continue;
       }
 
