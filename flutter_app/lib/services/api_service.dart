@@ -124,6 +124,11 @@ class ApiService {
     await _dio.post('/vpn/disconnect', data: {'deviceId': deviceId});
   }
 
+  Future<Map<String, dynamic>> getVpnStatus() async {
+    final resp = await _dio.get('/vpn/status');
+    return resp.data as Map<String, dynamic>;
+  }
+
   // ─── Servers ──────────────────────────────────────────────────────────────
 
   Future<List<dynamic>> getServers() async {

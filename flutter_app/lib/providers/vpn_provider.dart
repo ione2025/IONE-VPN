@@ -36,9 +36,11 @@ class VpnProvider extends ChangeNotifier {
   ConnectionStats _stats = const ConnectionStats();
   String? _errorMessage;
   String? _activeDeviceId;
+  String? _assignedIp;
   String? _webGeneratedConfig;
   String? _webEndpoint;
   Timer? _statsTimer;
+  Timer? _serverStatsTimer;
   Timer? _connectTimeoutTimer; // cancelled when stage reports connected/error
   DateTime? _connectedAt;
   StreamSubscription<VpnStage>? _stageSub;
@@ -47,6 +49,9 @@ class VpnProvider extends ChangeNotifier {
   // Set true when the user explicitly requests a disconnect so the stage
   // listener doesn't treat the resulting 'disconnected' event as an error.
   bool _disconnectRequested = false;
+  DateTime? _lastTrafficUpdateAt;
+  int? _lastServerRx;
+  int? _lastServerTx;
 
   // ─── Windows-specific traffic monitor ─────────────────────────────────────
   // One persistent PowerShell process; outputs "rxBytes,txBytes" every second.
@@ -205,6 +210,7 @@ class VpnProvider extends ChangeNotifier {
       if (effectiveConfig.trim().isEmpty) {
         throw Exception('WireGuard config was empty and no fallback config exists.');
       }
+      _assignedIp = _extractInterfaceAddress(effectiveConfig);
 
       endpoint ??= _extractEndpoint(effectiveConfig);
       endpoint ??= '${_selectedServer!.ip}:${_selectedServer!.wgPort}';
@@ -299,6 +305,7 @@ class VpnProvider extends ChangeNotifier {
       _errorMessage = null;
     } finally {
       _stopStatsTimer();
+      _stopServerStatsFallback();
       _connectedAt = null;
       _stats = const ConnectionStats();
       _setStatus(VpnStatus.disconnected);
@@ -318,6 +325,7 @@ class VpnProvider extends ChangeNotifier {
       // Android / iOS / other: EventChannel traffic stream drives speed values;
       // the Dart timer updates sessionDuration.
       _statsTimer = Timer.periodic(const Duration(seconds: 1), (_) => _refreshStats());
+      _startServerStatsFallback();
     }
   }
 
@@ -325,6 +333,75 @@ class VpnProvider extends ChangeNotifier {
     _statsTimer?.cancel();
     _statsTimer = null;
     _stopWinStatProcess();
+    _stopServerStatsFallback();
+  }
+
+  void _startServerStatsFallback() {
+    _serverStatsTimer?.cancel();
+    _lastServerRx = null;
+    _lastServerTx = null;
+
+    _serverStatsTimer = Timer.periodic(const Duration(seconds: 1), (_) async {
+      if (!isConnected || _connectedAt == null) return;
+
+      // If native traffic callbacks are active, prefer them.
+      final lastNative = _lastTrafficUpdateAt;
+      if (lastNative != null && DateTime.now().difference(lastNative).inSeconds < 3) {
+        return;
+      }
+
+      final myIp = _assignedIp;
+      if (myIp == null || myIp.isEmpty) return;
+
+      try {
+        final status = await _api.getVpnStatus();
+        final peersRaw = status['peerStats'];
+        if (peersRaw is! List) return;
+
+        Map<String, dynamic>? myPeer;
+        for (final item in peersRaw) {
+          if (item is! Map) continue;
+          final p = item.cast<String, dynamic>();
+          final allowed = (p['allowedIps'] ?? '').toString();
+          if (allowed.contains(myIp)) {
+            myPeer = p;
+            break;
+          }
+        }
+
+        if (myPeer == null) return;
+
+        final rx = (myPeer['rxBytes'] as num?)?.toInt() ?? 0;
+        final tx = (myPeer['txBytes'] as num?)?.toInt() ?? 0;
+
+        double dlKbps = 0;
+        double ulKbps = 0;
+        if (_lastServerRx != null && _lastServerTx != null) {
+          dlKbps = ((rx - _lastServerRx!).clamp(0, 1 << 30)) / 1024.0;
+          ulKbps = ((tx - _lastServerTx!).clamp(0, 1 << 30)) / 1024.0;
+        }
+        _lastServerRx = rx;
+        _lastServerTx = tx;
+
+        _stats = ConnectionStats(
+          uploadSpeedKbps: ulKbps,
+          downloadSpeedKbps: dlKbps,
+          totalUploadBytes: tx,
+          totalDownloadBytes: rx,
+          sessionDuration: DateTime.now().difference(_connectedAt!),
+        );
+        notifyListeners();
+      } catch (_) {
+        // Ignore fallback polling errors; native traffic stream may still work.
+      }
+    });
+  }
+
+  void _stopServerStatsFallback() {
+    _serverStatsTimer?.cancel();
+    _serverStatsTimer = null;
+    _lastServerRx = null;
+    _lastServerTx = null;
   }
 
   /// Starts a persistent PowerShell process that emits "rxBytes,txBytes" once
@@ -512,6 +589,8 @@ while (\$true) {
   void _onTrafficUpdate(Map<String, dynamic> traffic) {
     if (!isConnected) return;
 
+    _lastTrafficUpdateAt = DateTime.now();
+
     final upBps = (traffic['uploadSpeed'] as num?)?.toDouble() ?? 0;
     final downBps = (traffic['downloadSpeed'] as num?)?.toDouble() ?? 0;
     final totalUp = (traffic['totalUpload'] as num?)?.toInt() ?? 0;
@@ -611,6 +690,27 @@ while (\$true) {
     return null;
   }
 
+  String? _extractInterfaceAddress(String wgConfig) {
+    bool inInterface = false;
+    for (final rawLine in wgConfig.split('\n')) {
+      final line = rawLine.trim();
+      final lower = line.toLowerCase();
+      if (lower.startsWith('[interface]')) {
+        inInterface = true;
+        continue;
+      }
+      if (lower.startsWith('[peer]')) {
+        inInterface = false;
+        continue;
+      }
+      if (inInterface && lower.startsWith('address')) {
+        final rhs = line.split('=').skip(1).join('=').trim();
+        return rhs.split(',').first.trim();
+      }
+    }
+    return null;
+  }
+
   String _readableApiError(DioException e) {
     final status = e.response?.statusCode;
     final data = e.response?.data;
@@ -640,6 +740,7 @@ while (\$true) {
   @override
   void dispose() {
     _statsTimer?.cancel();
+    _serverStatsTimer?.cancel();
     _connectTimeoutTimer?.cancel();
     _stageSub?.cancel();
     _trafficSub?.cancel();
