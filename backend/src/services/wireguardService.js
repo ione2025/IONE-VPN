@@ -53,13 +53,6 @@ function generateWgKeyPair() {
 }
 
 /**
- * Generate a WireGuard-compatible 32-byte preshared key (base64).
- */
-function generatePsk() {
-  return crypto.randomBytes(32).toString('base64');
-}
-
-/**
  * Rebuild the in-memory usedIps set from all active Device records.
  * Call once on application start so IP allocation is correct after restarts.
  */
@@ -228,7 +221,6 @@ exports.addPeer = async (userId) => {
   }
 
   const { privateKey: clientPrivateKey, publicKey: clientPublicKey } = generateWgKeyPair();
-  const presharedKey = generatePsk();
   const assignedIp = allocateIp();
 
   // Append peer block to server config
@@ -236,7 +228,6 @@ exports.addPeer = async (userId) => {
     `\n# User: ${userId}`,
     '[Peer]',
     `PublicKey = ${clientPublicKey}`,
-    `PresharedKey = ${presharedKey}`,
     `AllowedIPs = ${assignedIp}`,
   ].join('\n');
 
@@ -256,7 +247,6 @@ exports.addPeer = async (userId) => {
     '',
     '[Peer]',
     `PublicKey = ${serverPublicKey}`,
-    `PresharedKey = ${presharedKey}`,
     `Endpoint = ${serverEndpoint}`,
     // Route all IPv4 traffic through the VPN.
     'AllowedIPs = 0.0.0.0/0',
@@ -266,7 +256,6 @@ exports.addPeer = async (userId) => {
   return {
     clientPrivateKey,
     clientPublicKey,
-    presharedKey,
     assignedIp,
     configFile,
   };
