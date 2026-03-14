@@ -1,3 +1,5 @@
+import 'dart:async';
+
 import 'package:flutter/material.dart';
 import 'package:provider/provider.dart';
 
@@ -16,6 +18,8 @@ class _SplashScreenState extends State<SplashScreen>
     with SingleTickerProviderStateMixin {
   late final AnimationController _ctrl;
   late final Animation<double> _fade;
+  Timer? _startupTimer;
+  Timer? _retryTimer;
 
   @override
   void initState() {
@@ -27,7 +31,7 @@ class _SplashScreenState extends State<SplashScreen>
     _fade = CurvedAnimation(parent: _ctrl, curve: Curves.easeIn);
 
     // After the animation, navigate based on auth state
-    Future.delayed(const Duration(milliseconds: 1800), _navigate);
+    _startupTimer = Timer(const Duration(milliseconds: 1800), _navigate);
   }
 
   void _navigate() {
@@ -40,12 +44,15 @@ class _SplashScreenState extends State<SplashScreen>
         Navigator.pushReplacementNamed(context, '/login');
       case AuthStatus.unknown:
         // Still loading – wait a little longer
-        Future.delayed(const Duration(milliseconds: 500), _navigate);
+        _retryTimer?.cancel();
+        _retryTimer = Timer(const Duration(milliseconds: 500), _navigate);
     }
   }
 
   @override
   void dispose() {
+    _startupTimer?.cancel();
+    _retryTimer?.cancel();
     _ctrl.dispose();
     super.dispose();
   }

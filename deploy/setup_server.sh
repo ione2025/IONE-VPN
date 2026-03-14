@@ -88,10 +88,57 @@ systemctl enable --now nginx
 info "Installing WireGuard..."
 apt-get install -y wireguard wireguard-tools
 
-# Enable IP forwarding
-echo "net.ipv4.ip_forward = 1" > /etc/sysctl.d/99-ione-vpn.conf
-echo "net.ipv6.conf.all.forwarding = 1" >> /etc/sysctl.d/99-ione-vpn.conf
-sysctl --system
+# ─── Kernel performance tuning ────────────────────────────────────────────────
+# These settings are used by Cloudflare, DigitalOcean, and major VPN providers
+# to maximize throughput and minimize latency.
+info "Applying kernel performance tuning..."
+cat > /etc/sysctl.d/99-ione-vpn.conf <<'SYSCTL'
+# ── IP forwarding (required for VPN packet routing) ──────────────────────────
+net.ipv4.ip_forward = 1
+net.ipv6.conf.all.forwarding = 1
+
+# ── TCP BBR congestion control ────────────────────────────────────────────────
+# Google's BBR algorithm: higher throughput + lower latency vs. CUBIC.
+# Used by: Cloudflare, Netflix, DigitalOcean, Linux kernel since 4.9.
+net.core.default_qdisc = fq
+net.ipv4.tcp_congestion_control = bbr
+
+# ── Socket buffer tuning ──────────────────────────────────────────────────────
+# Larger buffers improve throughput on high-bandwidth-delay-product paths.
+net.core.rmem_max = 67108864
+net.core.wmem_max = 67108864
+net.core.rmem_default = 1048576
+net.core.wmem_default = 1048576
+net.core.optmem_max = 65536
+net.ipv4.tcp_rmem = 4096 1048576 67108864
+net.ipv4.tcp_wmem = 4096 1048576 67108864
+net.ipv4.tcp_mem = 786432 1048576 26777216
+net.ipv4.udp_rmem_min = 8192
+net.ipv4.udp_wmem_min = 8192
+
+# ── Connection handling ───────────────────────────────────────────────────────
+# Increase backlog for high-concurrency VPN traffic.
+net.core.somaxconn = 32768
+net.core.netdev_max_backlog = 32768
+net.ipv4.tcp_max_syn_backlog = 8192
+net.ipv4.tcp_max_tw_buckets = 2000000
+net.ipv4.tcp_tw_reuse = 1
+net.ipv4.tcp_fin_timeout = 10
+net.ipv4.tcp_slow_start_after_idle = 0
+
+# ── Security hardening ────────────────────────────────────────────────────────
+net.ipv4.conf.all.rp_filter = 1
+net.ipv4.conf.default.rp_filter = 1
+net.ipv4.icmp_echo_ignore_broadcasts = 1
+net.ipv4.tcp_syncookies = 1
+SYSCTL
+
+# Apply immediately (no reboot needed)
+sysctl --system >/dev/null
+
+# Enable BBR module if not already loaded
+modprobe tcp_bbr || true
+echo "tcp_bbr" >> /etc/modules-load.d/ione-vpn.conf 2>/dev/null || true
 
 # ─── 9. OpenVPN ───────────────────────────────────────────────────────────────
 info "Installing OpenVPN..."

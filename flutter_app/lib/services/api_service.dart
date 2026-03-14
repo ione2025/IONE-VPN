@@ -1,3 +1,5 @@
+import 'dart:io';
+
 import 'package:dio/dio.dart';
 import 'package:flutter_secure_storage/flutter_secure_storage.dart';
 
@@ -8,6 +10,8 @@ import '../constants/app_constants.dart';
 /// Automatically attaches the Bearer token and handles 401 token refresh.
 class ApiService {
   late final Dio _dio;
+  late final List<String> _baseUrlCandidates;
+  int _activeBaseUrlIndex = 0;
   final FlutterSecureStorage _storage = const FlutterSecureStorage(
     aOptions: AndroidOptions(
       encryptedSharedPreferences: true,
@@ -16,8 +20,13 @@ class ApiService {
   );
 
   ApiService() {
+    _baseUrlCandidates = [
+      AppConstants.apiBaseUrl,
+      ...AppConstants.apiBaseUrlFallbacks,
+    ];
+
     _dio = Dio(BaseOptions(
-      baseUrl: AppConstants.apiBaseUrl,
+      baseUrl: _baseUrlCandidates.first,
       connectTimeout: AppConstants.connectTimeout,
       receiveTimeout: AppConstants.receiveTimeout,
       headers: {'Content-Type': 'application/json'},
@@ -46,6 +55,17 @@ class ApiService {
     DioException err,
     ErrorInterceptorHandler handler,
   ) async {
+    final shouldTryFailover =
+        (_isNetworkConnectionError(err) || _isLikelyPath404(err)) &&
+        err.requestOptions.extra['didBaseUrlFailover'] != true;
+
+    if (shouldTryFailover) {
+      final recovered = await _retryWithBaseUrlFailover(err.requestOptions);
+      if (recovered != null) {
+        return handler.resolve(recovered);
+      }
+    }
+
     if (err.response?.statusCode == 401) {
       // Attempt silent token refresh
       try {
@@ -54,7 +74,7 @@ class ApiService {
         if (refreshToken == null) return handler.next(err);
 
         final refreshResp = await Dio().post(
-          '${AppConstants.apiBaseUrl}/auth/refresh',
+          '${_dio.options.baseUrl}/auth/refresh',
           data: {'refreshToken': refreshToken},
         );
         final newToken = refreshResp.data['tokens']['access'] as String;
@@ -69,6 +89,64 @@ class ApiService {
       }
     }
     handler.next(err);
+  }
+
+  bool _isNetworkConnectionError(DioException err) {
+    if (err.type == DioExceptionType.connectionError) return true;
+    final error = err.error;
+    return error is SocketException;
+  }
+
+  bool _isLikelyPath404(DioException err) {
+    if (err.response?.statusCode != 404) return false;
+    final path = err.requestOptions.path;
+    return path.startsWith('/auth/') || path == '/auth/login' || path == '/auth/register';
+  }
+
+  Future<Response<dynamic>?> _retryWithBaseUrlFailover(RequestOptions original) async {
+    for (var i = 0; i < _baseUrlCandidates.length; i++) {
+      if (i == _activeBaseUrlIndex) continue;
+
+      final candidate = _baseUrlCandidates[i];
+      try {
+        final token = await _storage.read(key: AppConstants.keyAccessToken);
+        final retryClient = Dio(BaseOptions(
+          baseUrl: candidate,
+          connectTimeout: AppConstants.connectTimeout,
+          receiveTimeout: AppConstants.receiveTimeout,
+          headers: {
+            'Content-Type': 'application/json',
+            ...original.headers,
+            if (token != null) 'Authorization': 'Bearer $token',
+          },
+        ));
+
+        final response = await retryClient.request<dynamic>(
+          original.path,
+          data: original.data,
+          queryParameters: original.queryParameters,
+          options: Options(
+            method: original.method,
+            responseType: original.responseType,
+            contentType: original.contentType,
+            sendTimeout: original.sendTimeout,
+            receiveTimeout: original.receiveTimeout,
+            validateStatus: original.validateStatus,
+            extra: {
+              ...original.extra,
+              'didBaseUrlFailover': true,
+            },
+          ),
+        );
+
+        _activeBaseUrlIndex = i;
+        _dio.options.baseUrl = candidate;
+        return response;
+      } catch (_) {
+        // Try next candidate.
+      }
+    }
+    return null;
   }
 
   // ─── Auth ─────────────────────────────────────────────────────────────────
@@ -195,6 +273,24 @@ class ApiService {
       'tier': tier,
     });
     return resp.data as Map<String, dynamic>;
+  }
+
+  Future<Map<String, dynamic>> toggleUserStatus(String userId) async {
+    final resp = await _dio.patch('/admin/users/$userId/toggle-status');
+    return resp.data as Map<String, dynamic>;
+  }
+
+  Future<List<dynamic>> getAdminWgPeers() async {
+    final resp = await _dio.get('/admin/wg-peers');
+    return resp.data['peers'] as List? ?? const [];
+  }
+
+  Future<void> revokeAllUserDevices(String userId) async {
+    await _dio.delete('/admin/users/$userId/devices');
+  }
+
+  Future<void> deleteUser(String userId) async {
+    await _dio.delete('/admin/users/$userId');
   }
 
   // ─── Token storage helpers ────────────────────────────────────────────────

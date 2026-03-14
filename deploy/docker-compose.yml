@@ -1,7 +1,15 @@
 version: '3.9'
 
-# Optional: use Docker Compose instead of bare-metal install.
+# IONE VPN – Full production stack.
 # Run: docker compose up -d
+#
+# Core services (always run):   mongo, redis, api
+# Monitoring stack (optional):  prometheus, grafana
+# NAT traversal (optional):     coturn  ← lets mobile clients behind strict NAT connect
+#
+# To start only core:  docker compose up -d mongo redis api
+# To add monitoring:   docker compose --profile monitoring up -d
+# To add TURN server:  docker compose --profile turn up -d
 
 services:
 
@@ -42,14 +50,95 @@ services:
       - redis
     networks:
       - backend
-    # WireGuard needs NET_ADMIN capability
+    # WireGuard needs NET_ADMIN capability to manage wg0 interface
     cap_add:
       - NET_ADMIN
     volumes:
       - /etc/wireguard:/etc/wireguard
 
+  # ── Prometheus – metrics collection ───────────────────────────────────────
+  # Open-source: https://github.com/prometheus/prometheus
+  # Access: http://localhost:9090  (bind to 127.0.0.1 in production)
+  prometheus:
+    image: prom/prometheus:v2.51.0
+    container_name: ione-vpn-prometheus
+    profiles: [monitoring]
+    restart: unless-stopped
+    command:
+      - '--config.file=/etc/prometheus/prometheus.yml'
+      - '--storage.tsdb.path=/prometheus'
+      - '--storage.tsdb.retention.time=30d'
+      - '--web.enable-lifecycle'
+    volumes:
+      - ./prometheus.yml:/etc/prometheus/prometheus.yml:ro
+      - prometheus_data:/prometheus
+    ports:
+      - "127.0.0.1:9090:9090"
+    networks:
+      - backend
+
+  # ── Grafana – metrics visualisation ───────────────────────────────────────
+  # Open-source: https://github.com/grafana/grafana
+  # Access: http://localhost:3001  (default admin/admin – change on first login)
+  grafana:
+    image: grafana/grafana:10.4.1
+    container_name: ione-vpn-grafana
+    profiles: [monitoring]
+    restart: unless-stopped
+    environment:
+      GF_SECURITY_ADMIN_PASSWORD: ${GRAFANA_PASSWORD:-changeme}
+      GF_USERS_ALLOW_SIGN_UP: "false"
+      GF_SERVER_ROOT_URL: "%(protocol)s://%(domain)s/grafana/"
+      GF_SERVER_SERVE_FROM_SUB_PATH: "true"
+    volumes:
+      - grafana_data:/var/lib/grafana
+    ports:
+      - "127.0.0.1:3001:3000"
+    depends_on:
+      - prometheus
+    networks:
+      - backend
+
+  # ── Coturn – STUN/TURN server for NAT traversal ───────────────────────────
+  # Open-source: https://github.com/coturn/coturn
+  # Used by: mobile clients behind CGNAT / symmetric NAT that can't reach WireGuard UDP directly.
+  # Protocol: RFC 5766 TURN over UDP/TCP + TLS
+  # Approach: same as Netbird – use TURN as relay fallback only when direct WireGuard fails.
+  coturn:
+    image: coturn/coturn:4.6
+    container_name: ione-vpn-coturn
+    profiles: [turn]
+    restart: unless-stopped
+    network_mode: host          # STUN/TURN requires host networking for proper IP detection
+    volumes:
+      - ./coturn.conf:/etc/coturn/turnserver.conf:ro
+    environment:
+      TURN_EXTERNAL_IP: ${SERVER_IP:-}
+      TURN_USERNAME: ${TURN_USERNAME:-ionevpn}
+      TURN_PASSWORD: ${TURN_PASSWORD:-changeme}
+
+  # ── node-exporter – host system metrics for Prometheus ───────────────────
+  # Open-source: https://github.com/prometheus/node_exporter
+  node-exporter:
+    image: prom/node-exporter:v1.8.0
+    container_name: ione-vpn-node-exporter
+    profiles: [monitoring]
+    restart: unless-stopped
+    command:
+      - '--path.procfs=/host/proc'
+      - '--path.sysfs=/host/sys'
+      - '--collector.filesystem.mount-points-exclude=^/(sys|proc|dev|host|etc)($$|/)'
+    volumes:
+      - /proc:/host/proc:ro
+      - /sys:/host/sys:ro
+      - /:/rootfs:ro
+    networks:
+      - backend
+
 volumes:
   mongo_data:
+  prometheus_data:
+  grafana_data:
 
 networks:
   backend:

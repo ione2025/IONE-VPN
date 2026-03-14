@@ -26,5 +26,21 @@ router.patch(
   adminController.toggleUserStatus,
 );
 router.get('/wg-peers', apiLimiter, protect, restrictTo('admin'), adminController.wgPeers);
+router.delete(
+  '/users/:userId',
+  apiLimiter,
+  protect,
+  restrictTo('admin'),
+  param('userId').notEmpty(),
+  adminController.deleteUser,
+);
+router.delete(
+  '/users/:userId/devices',
+  apiLimiter,
+  protect,
+  restrictTo('admin'),
+  param('userId').notEmpty(),
+  adminController.revokeAllDevices,
+);
 
 module.exports = router;

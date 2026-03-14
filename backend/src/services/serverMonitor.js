@@ -22,7 +22,7 @@ const SERVERS = [
     country: 'SG',
     flag: '🇸🇬',
     ip: process.env.SERVER_IP || '127.0.0.1',
-    wgPort: 51820,
+    wgPort: parseInt(process.env.WG_PORT || '51820', 10),
     ovpnPort: 1194,
     isOnline: true,
     load: 0,

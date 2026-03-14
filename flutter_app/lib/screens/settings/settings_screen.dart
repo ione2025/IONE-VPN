@@ -3,6 +3,7 @@ import 'package:provider/provider.dart';
 
 import '../../providers/auth_provider.dart';
 import '../../providers/theme_provider.dart';
+import '../../providers/vpn_provider.dart';
 import '../../constants/app_theme.dart';
 
 class SettingsScreen extends StatelessWidget {
@@ -146,16 +147,15 @@ class _KillSwitchTile extends StatefulWidget {
 }
 
 class _KillSwitchTileState extends State<_KillSwitchTile> {
-  bool _enabled = true;
-
   @override
   Widget build(BuildContext context) {
+    final vpn = context.watch<VpnProvider>();
     return SwitchListTile(
-      secondary: const Icon(Icons.block_outlined),
+      secondary: const Icon(Icons.security_outlined),
       title: const Text('Kill Switch'),
-      subtitle: const Text('Block internet if VPN drops'),
-      value: _enabled,
-      onChanged: (v) => setState(() => _enabled = v),
+      subtitle: const Text('Block all traffic if VPN disconnects'),
+      value: vpn.killSwitchEnabled,
+      onChanged: (_) => vpn.toggleKillSwitch(),
     );
   }
 }

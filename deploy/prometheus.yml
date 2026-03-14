@@ -1,0 +1,37 @@
+# Prometheus configuration for IONE VPN
+# Scrape interval: every 15s
+# Retention: 30 days (set in docker-compose command)
+
+global:
+  scrape_interval: 15s
+  evaluation_interval: 15s
+  external_labels:
+    project: 'ione-vpn'
+
+scrape_configs:
+
+  # ── Node Exporter – host CPU, memory, disk, network ──────────────────────
+  - job_name: 'node-exporter'
+    static_configs:
+      - targets: ['node-exporter:9100']
+
+  # ── IONE VPN API – app-level metrics ──────────────────────────────────────
+  # The backend exposes GET /metrics for Prometheus scraping.
+  - job_name: 'ione-vpn-api'
+    static_configs:
+      - targets: ['api:3000']
+    metrics_path: '/metrics'
+    # Bearer token if METRICS_TOKEN env var is set in backend
+    bearer_token_file: /etc/prometheus/api_token.txt
+
+  # ── MongoDB – via mongo-exporter (optional) ───────────────────────────────
+  # Uncomment if you add percona/mongodb_exporter to docker-compose.
+  # - job_name: 'mongodb'
+  #   static_configs:
+  #     - targets: ['mongo-exporter:9216']
+
+  # ── Redis – basic check ───────────────────────────────────────────────────
+  # Uncomment if you add oliver006/redis_exporter to docker-compose.
+  # - job_name: 'redis'
+  #   static_configs:
+  #     - targets: ['redis-exporter:9121']

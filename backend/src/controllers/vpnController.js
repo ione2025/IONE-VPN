@@ -61,10 +61,10 @@ exports.generateConfig = async (req, res, next) => {
     let deviceData = { userId, name, platform, protocol };
 
     if (protocol === 'wireguard') {
-      const { clientPublicKey, assignedIp, configFile } =
+      const { clientPublicKey, presharedKey, assignedIp, configFile } =
         await wireguardService.addPeer(userId);
       config = configFile;
-      deviceData = { ...deviceData, wgPublicKey: clientPublicKey, assignedIp };
+      deviceData = { ...deviceData, wgPublicKey: clientPublicKey, wgPresharedKey: presharedKey, assignedIp };
     } else if (protocol === 'openvpn') {
       config = await openvpnService.generateClientConfig(userId, name);
     } else {

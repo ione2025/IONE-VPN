@@ -151,6 +151,61 @@ exports.wgPeers = async (_req, res, next) => {
   }
 };
 
+// ─── Delete user account (admin hard-delete) ──────────────────────────────────
+exports.deleteUser = async (req, res, next) => {
+  try {
+    const { userId } = req.params;
+
+    // Prevent self-deletion
+    if (userId === String(req.user.id)) {
+      return res.status(400).json({ message: 'Cannot delete your own admin account' });
+    }
+
+    const user = await User.findById(userId);
+    if (!user) return res.status(404).json({ message: 'User not found' });
+
+    // Remove all WireGuard peers for this user
+    const devices = await Device.find({ userId, isActive: true, wgPublicKey: { $exists: true, $ne: null } });
+    await Promise.all(
+      devices.map((d) =>
+        wireguardService
+          .removePeer(d.wgPublicKey, d.assignedIp)
+          .catch((err) => logger.warn(`Could not remove WG peer on user delete: ${err.message}`)),
+      ),
+    );
+
+    await Device.deleteMany({ userId });
+    await user.deleteOne();
+
+    logger.info(`Admin hard-deleted user: ${user.email} (${userId})`);
+    res.json({ message: `User ${user.email} deleted` });
+  } catch (err) {
+    next(err);
+  }
+};
+
+// ─── Revoke ALL devices for a user (admin forced disconnect) ─────────────────
+exports.revokeAllDevices = async (req, res, next) => {
+  try {
+    const { userId } = req.params;
+    const devices = await Device.find({ userId, isActive: true, wgPublicKey: { $exists: true, $ne: null } });
+
+    await Promise.all(
+      devices.map((d) =>
+        wireguardService
+          .removePeer(d.wgPublicKey, d.assignedIp)
+          .catch((err) => logger.warn(`Could not remove WG peer for device ${d.deviceId}: ${err.message}`)),
+      ),
+    );
+
+    const result = await Device.updateMany({ userId }, { $set: { isActive: false } });
+    logger.info(`Admin revoked all devices for userId ${userId}: ${result.modifiedCount} devices deactivated`);
+    res.json({ message: 'All devices revoked', count: result.modifiedCount });
+  } catch (err) {
+    next(err);
+  }
+};
+
 // ─── Suspend / unsuspend user ─────────────────────────────────────────────────
 exports.toggleUserStatus = async (req, res, next) => {
   try {

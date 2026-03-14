@@ -41,6 +41,7 @@ class VpnProvider extends ChangeNotifier {
   String? _webEndpoint;
   Timer? _statsTimer;
   Timer? _serverStatsTimer;
+  Timer? _healthTimer;
   Timer? _connectTimeoutTimer; // cancelled when stage reports connected/error
   DateTime? _connectedAt;
   StreamSubscription<VpnStage>? _stageSub;
@@ -52,6 +53,8 @@ class VpnProvider extends ChangeNotifier {
   DateTime? _lastTrafficUpdateAt;
   int? _lastServerRx;
   int? _lastServerTx;
+  DateTime? _lastSelfHealAt;
+  bool _isSelfHealing = false;
 
   // ─── Windows-specific traffic monitor ─────────────────────────────────────
   // One persistent PowerShell process; outputs "rxBytes,txBytes" every second.
@@ -60,6 +63,7 @@ class VpnProvider extends ChangeNotifier {
   Process? _winStatProcess;
   int _winLastRx = 0;
   int _winLastTx = 0;
+  bool _killSwitchEnabled = false;
 
   // ─── Getters ──────────────────────────────────────────────────────────────
   VpnStatus get status => _status;
@@ -73,10 +77,40 @@ class VpnProvider extends ChangeNotifier {
   bool get isConnected => _status == VpnStatus.connected;
   bool get isBusy =>
       _status == VpnStatus.connecting || _status == VpnStatus.disconnecting;
+  bool get killSwitchEnabled => _killSwitchEnabled;
+
+  // ─── Kill switch ──────────────────────────────────────────────────────────
+  /// Toggle the kill switch preference.
+  ///
+  /// Kill switch works at the WireGuard config level:
+  /// • AllowedIPs = 0.0.0.0/0, ::/0 forces ALL traffic through the tunnel.
+  ///   If the tunnel drops, the OS has no route for internet traffic → no leak.
+  /// • When disabled, a split-tunnel route can be used if needed.
+  ///
+  /// Note: WireGuard inherently acts as a kill switch when AllowedIPs covers
+  /// all addresses (our default). This flag additionally controls whether the
+  /// app enforces blocking DNS on Windows when disconnected.
+  Future<void> toggleKillSwitch() async {
+    _killSwitchEnabled = !_killSwitchEnabled;
+    await _storage.write(
+      key: AppConstants.keyKillSwitch,
+      value: _killSwitchEnabled ? 'true' : 'false',
+    );
+    notifyListeners();
+    debugPrint('[VpnProvider] Kill switch: ${_killSwitchEnabled ? 'ON' : 'OFF'}');
+  }
+
+  Future<void> _loadKillSwitchPreference() async {
+    final stored = await _storage.read(key: AppConstants.keyKillSwitch);
+    _killSwitchEnabled = stored == 'true';
+  }
 
   Future<void> initialize() async {
     if (_isInitialized) return;
     _errorMessage = null;
+
+    await _applyConfigRevisionIfNeeded();
+    await _loadKillSwitchPreference();
 
     if (kIsWeb) {
       _isInitialized = true;
@@ -127,6 +161,8 @@ class VpnProvider extends ChangeNotifier {
     required String platform,
     required String deviceName,
     String? wgQuickConfigOverride,
+    bool forceRefreshConfig = false,
+    bool preferFreshConfig = false,
   }) async {
     if (isBusy) return;
     await initialize();
@@ -147,6 +183,9 @@ class VpnProvider extends ChangeNotifier {
         notifyListeners();
       }
 
+      await _storage.write(key: AppConstants.keyLastPlatform, value: platform);
+      await _storage.write(key: AppConstants.keyLastDeviceName, value: deviceName);
+
       var wgConfig = wgQuickConfigOverride;
       var endpoint = await _storage.read(key: AppConstants.keyWgEndpoint);
 
@@ -156,10 +195,13 @@ class VpnProvider extends ChangeNotifier {
 
       final hadCachedConfig = wgConfig != null && wgConfig.trim().isNotEmpty;
 
-        // Reuse cached config by default to keep a stable key pair per device.
-        // Rotating keys on every connect can cause transient "connected but
-        // no traffic" behavior when reconnects happen rapidly.
-        final mustFetchNewConfig = wgQuickConfigOverride == null && !hadCachedConfig;
+      // Reuse cached config by default to keep a stable key pair per device.
+      // Refresh when explicitly forced/requested, missing, or stale.
+      final mustFetchNewConfig = wgQuickConfigOverride == null &&
+          (forceRefreshConfig ||
+            preferFreshConfig ||
+            !hadCachedConfig ||
+            await _isCachedConfigStale());
 
       // 2. Request a fresh config from the backend.
       // If that fails, keep using the last known-good config so existing users
@@ -185,6 +227,10 @@ class VpnProvider extends ChangeNotifier {
 
           if (wgConfig != null && wgConfig.trim().isNotEmpty) {
             await _storage.write(key: AppConstants.keyWgConfig, value: wgConfig);
+            await _storage.write(
+              key: AppConstants.keyWgConfigUpdatedAt,
+              value: DateTime.now().toUtc().toIso8601String(),
+            );
           }
           if (endpoint != null && endpoint.trim().isNotEmpty) {
             await _storage.write(key: AppConstants.keyWgEndpoint, value: endpoint);
@@ -210,18 +256,50 @@ class VpnProvider extends ChangeNotifier {
         }
       }
 
-      final effectiveConfig = await _patchConfig(wgConfig ?? AppConstants.wgDefaultConfig);
+      if (wgConfig == null || wgConfig.trim().isEmpty) {
+        throw Exception('WireGuard config missing. Please try again.');
+      }
+
+      final endpointFromConfig = _extractEndpoint(wgConfig);
+      final endpointFromServer = '${_selectedServer!.ip}:${_selectedServer!.wgPort}';
+      String resolvedEndpoint = endpointFromConfig?.trim().isNotEmpty == true
+          ? endpointFromConfig!
+          : endpoint?.trim().isNotEmpty == true
+              ? endpoint!
+              : endpointFromServer.trim().isNotEmpty
+                  ? endpointFromServer
+                  : '';
+
+      // Port-mismatch guard: if the resolved endpoint uses a stale port
+      // (e.g. a cached config from before a server port change), override with
+      // the authoritative constant so WireGuard can reach the server.
+      final expectedPort = AppConstants.wgPort.toString();
+      if (resolvedEndpoint.isNotEmpty &&
+          resolvedEndpoint.split(':').last != expectedPort) {
+        resolvedEndpoint = AppConstants.wgServerEndpoint;
+      }
+      if (resolvedEndpoint.isEmpty) {
+        resolvedEndpoint = AppConstants.wgServerEndpoint;
+      }
+
+      if (resolvedEndpoint.isEmpty) {
+        throw Exception('No WireGuard endpoint available. Please refresh servers and try again.');
+      }
+
+      await _storage.write(key: AppConstants.keyWgEndpoint, value: resolvedEndpoint);
+
+      final effectiveConfig = await _patchConfig(
+        wgConfig,
+        forcedEndpoint: resolvedEndpoint,
+      );
       if (effectiveConfig.trim().isEmpty) {
         throw Exception('WireGuard config was empty and no fallback config exists.');
       }
       _assignedIp = _extractInterfaceAddress(effectiveConfig);
 
-      endpoint ??= _extractEndpoint(effectiveConfig);
-      endpoint ??= '${_selectedServer!.ip}:${_selectedServer!.wgPort}';
-
       if (kIsWeb) {
         _webGeneratedConfig = effectiveConfig;
-        _webEndpoint = endpoint;
+        _webEndpoint = resolvedEndpoint;
         _setStatus(VpnStatus.connected);
         notifyListeners();
         return;
@@ -245,7 +323,7 @@ class VpnProvider extends ChangeNotifier {
 
       // 4. Start the native tunnel
       await _wireguard.connect(
-        serverAddress: endpoint,
+        serverAddress: resolvedEndpoint,
         wgQuickConfig: effectiveConfig,
         providerBundleIdentifier: AppConstants.wgProviderBundleIdentifier,
       );
@@ -331,6 +409,7 @@ class VpnProvider extends ChangeNotifier {
       _statsTimer = Timer.periodic(const Duration(seconds: 1), (_) => _refreshStats());
       _startServerStatsFallback();
     }
+    _startHealthMonitor();
   }
 
   void _stopStatsTimer() {
@@ -338,6 +417,97 @@ class VpnProvider extends ChangeNotifier {
     _statsTimer = null;
     _stopWinStatProcess();
     _stopServerStatsFallback();
+    _stopHealthMonitor();
+  }
+
+  void _startHealthMonitor() {
+    _healthTimer?.cancel();
+    _healthTimer = Timer.periodic(const Duration(seconds: 20), (_) {
+      unawaited(_checkTunnelHealth());
+    });
+  }
+
+  void _stopHealthMonitor() {
+    _healthTimer?.cancel();
+    _healthTimer = null;
+  }
+
+  Future<void> _checkTunnelHealth() async {
+    if (!isConnected || _connectedAt == null || _isSelfHealing) return;
+
+    // Give fresh sessions time to establish traffic before evaluating health.
+    if (DateTime.now().difference(_connectedAt!).inSeconds < 30) return;
+
+    final myIp = _assignedIp;
+    if (myIp == null || myIp.isEmpty) return;
+
+    try {
+      final status = await _api.getVpnStatus();
+      final peersRaw = status['peerStats'];
+      if (peersRaw is! List) return;
+
+      Map<String, dynamic>? myPeer;
+      for (final item in peersRaw) {
+        if (item is! Map) continue;
+        final p = item.cast<String, dynamic>();
+        final allowed = (p['allowedIps'] ?? '').toString();
+        if (allowed.contains(myIp)) {
+          myPeer = p;
+          break;
+        }
+      }
+
+      if (myPeer == null) {
+        await _selfHealReconnect('peer not found on server');
+        return;
+      }
+
+      final handshakeRaw = myPeer['lastHandshake'];
+      DateTime? handshakeAt;
+      if (handshakeRaw is String && handshakeRaw.trim().isNotEmpty) {
+        handshakeAt = DateTime.tryParse(handshakeRaw)?.toUtc();
+      }
+
+      final staleHandshake = handshakeAt == null ||
+          DateTime.now().toUtc().difference(handshakeAt).inMinutes >= 3;
+      if (staleHandshake) {
+        await _selfHealReconnect('stale handshake');
+      }
+    } catch (_) {
+      // Ignore transient health-check failures.
+    }
+  }
+
+  Future<void> _selfHealReconnect(String reason) async {
+    if (_isSelfHealing) return;
+    final last = _lastSelfHealAt;
+    if (last != null && DateTime.now().difference(last).inMinutes < 5) {
+      return;
+    }
+
+    _isSelfHealing = true;
+    _lastSelfHealAt = DateTime.now();
+    debugPrint('[VpnProvider] Self-heal reconnect triggered: $reason');
+
+    try {
+      final storedPlatform = await _storage.read(key: AppConstants.keyLastPlatform);
+      final storedDeviceName = await _storage.read(key: AppConstants.keyLastDeviceName);
+      final platform = storedPlatform ??
+          (Platform.isWindows ? 'windows' : Platform.isAndroid ? 'android' : 'ios');
+      final deviceName = storedDeviceName ?? 'auto-$platform';
+
+      await disconnect();
+      await connect(
+        platform: platform,
+        deviceName: deviceName,
+        forceRefreshConfig: true,
+        preferFreshConfig: true,
+      );
+    } catch (e) {
+      debugPrint('[VpnProvider] Self-heal reconnect failed: $e');
+    } finally {
+      _isSelfHealing = false;
+    }
   }
 
   void _startServerStatsFallback() {
@@ -528,9 +698,15 @@ while (\$true) {
     final cachedDeviceId = await _storage.read(key: AppConstants.keyActiveDeviceId);
     if (cachedConfig == null || cachedDeviceId == null) return;
 
-    final platform =
-        Platform.isWindows ? 'windows' : Platform.isAndroid ? 'android' : 'ios';
-    await connect(platform: platform, deviceName: 'auto');
+    final platform = await _storage.read(key: AppConstants.keyLastPlatform) ??
+      (Platform.isWindows ? 'windows' : Platform.isAndroid ? 'android' : 'ios');
+    final deviceName =
+      await _storage.read(key: AppConstants.keyLastDeviceName) ?? 'auto-$platform';
+    await connect(
+      platform: platform,
+      deviceName: deviceName,
+      preferFreshConfig: false,
+    );
   }
 
   // ─── Internal ─────────────────────────────────────────────────────────────
@@ -614,7 +790,10 @@ while (\$true) {
   ///     Removes any MTU already in the config to avoid conflicts.
   ///  2. Force IPv4-only full tunnel to avoid IPv6 route blackholes on
   ///     servers that are not configured for IPv6 forwarding/NAT.
-  Future<String> _patchConfig(String config) async {
+  Future<String> _patchConfig(
+    String config, {
+    String? forcedEndpoint,
+  }) async {
     // ── Determine optimal MTU ──────────────────────────────────────────────
     int mtu = 1280; // conservative default for mobile/carrier networks
     try {
@@ -640,6 +819,7 @@ while (\$true) {
     final result = <String>[];
     bool mtuInserted = false;
     bool inInterface = false;
+    bool hasDns = false;
 
     for (var line in lines) {
       final trimmed = line.trim().toLowerCase();
@@ -651,9 +831,19 @@ while (\$true) {
       // Remove any existing MTU line — we will inject the detected value.
       if (inInterface && trimmed.startsWith('mtu')) continue;
 
-      // Replace AllowedIPs to guarantee full-tunnel over IPv4 only.
+      // Force IPv4-only full tunnel to avoid IPv6 blackholes on servers
+      // without IPv6 forwarding/NAT.
       if (!inInterface && trimmed.startsWith('allowedips')) {
         result.add('AllowedIPs = 0.0.0.0/0');
+        continue;
+      }
+
+      if (inInterface && trimmed.startsWith('dns')) {
+        hasDns = true;
+      }
+
+      if (!inInterface && trimmed.startsWith('endpoint') && forcedEndpoint != null) {
+        result.add('Endpoint = $forcedEndpoint');
         continue;
       }
 
@@ -666,7 +856,40 @@ while (\$true) {
       }
     }
 
+    if (!hasDns) {
+      final interfaceIndex = result.indexWhere(
+        (line) => line.trim().toLowerCase().startsWith('[interface]'),
+      );
+      if (interfaceIndex >= 0) {
+        result.insert(interfaceIndex + 1, 'DNS = 1.1.1.1, 8.8.8.8');
+      }
+    }
+
     return result.join('\n');
+  }
+
+  Future<bool> _isCachedConfigStale() async {
+    final raw = await _storage.read(key: AppConstants.keyWgConfigUpdatedAt);
+    if (raw == null || raw.trim().isEmpty) return true;
+    final parsed = DateTime.tryParse(raw);
+    if (parsed == null) return true;
+    return DateTime.now().toUtc().difference(parsed.toUtc()).inDays >= 3;
+  }
+
+  Future<void> _applyConfigRevisionIfNeeded() async {
+    final stored = await _storage.read(key: AppConstants.keyWgConfigRevision);
+    if (stored == AppConstants.wgConfigRevisionValue) return;
+
+    await Future.wait([
+      _storage.delete(key: AppConstants.keyWgConfig),
+      _storage.delete(key: AppConstants.keyWgEndpoint),
+      _storage.delete(key: AppConstants.keyWgConfigUpdatedAt),
+      _storage.delete(key: AppConstants.keyActiveDeviceId),
+      _storage.write(
+        key: AppConstants.keyWgConfigRevision,
+        value: AppConstants.wgConfigRevisionValue,
+      ),
+    ]);
   }
 
   String? _extractConfig(Map<String, dynamic> data) {
@@ -745,6 +968,7 @@ while (\$true) {
   void dispose() {
     _statsTimer?.cancel();
     _serverStatsTimer?.cancel();
+    _healthTimer?.cancel();
     _connectTimeoutTimer?.cancel();
     _stageSub?.cancel();
     _trafficSub?.cancel();

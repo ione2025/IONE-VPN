@@ -37,6 +37,22 @@ const usedIps = new Set(['10.8.0.1']); // server itself
 // ─── Key generation (pure Node.js – no `wg` binary required) ────────────────
 
 /**
+ * Generate a 256-bit pre-shared key (PSK) as a base64 string.
+ *
+ * Purpose: adds a symmetric-key layer on top of the Curve25519 ECDH handshake.
+ * If Curve25519 is ever broken (e.g. by a quantum computer), the PSK still
+ * provides 256-bit symmetric security. This is the same technique used by
+ * Mullvad and ProtonVPN for post-quantum resistance.
+ *
+ * The PSK is unique per peer and is included in both the server peer block
+ * and the generated client config file.
+ */
+function generateWgPsk() {
+  return crypto.randomBytes(32).toString('base64');
+}
+exports.generateWgPsk = generateWgPsk;
+
+/**
  * Generate a WireGuard key pair.
  *
  * In production, prefer native `wg` key generation to guarantee full
@@ -258,13 +274,16 @@ exports.addPeer = async (userId) => {
   }
 
   const { privateKey: clientPrivateKey, publicKey: clientPublicKey } = await generateWgKeyPair();
+  const presharedKey = generateWgPsk();
   const assignedIp = allocateIp();
 
-  // Append peer block to server config
+  // Append peer block to server config.
+  // PresharedKey adds a post-quantum symmetric-encryption layer (RFC 8918).
   const peerBlock = [
     `\n# User: ${userId}`,
     '[Peer]',
     `PublicKey = ${clientPublicKey}`,
+    `PresharedKey = ${presharedKey}`,
     `AllowedIPs = ${assignedIp}`,
   ].join('\n');
 
@@ -306,19 +325,28 @@ exports.addPeer = async (userId) => {
     '[Interface]',
     `PrivateKey = ${clientPrivateKey}`,
     `Address = ${assignedIp}`,
+    // Support comma-separated DNS list from env (e.g. "1.1.1.1, 1.0.0.1")
     `DNS = ${WG_DNS}`,
+    // 1420 = standard Ethernet MTU (1500) minus WireGuard overhead (80 bytes).
+    // Prevents fragmentation and packet loss on most ISPs.
+    'MTU = 1420',
     '',
     '[Peer]',
     `PublicKey = ${serverPublicKey}`,
+    // PSK adds a post-quantum symmetric layer (RFC 8918 / WireGuard spec).
+    // Same peer PSK that is set on the server side in the peer block.
+    `PresharedKey = ${presharedKey}`,
     `Endpoint = ${serverEndpoint}`,
-    // Route all IPv4 traffic through the VPN.
-    'AllowedIPs = 0.0.0.0/0',
+    // Route ALL traffic (IPv4 + IPv6) through the VPN.
+    // ::/0 prevents IPv6 leak-outs that expose the real IP.
+    'AllowedIPs = 0.0.0.0/0, ::/0',
     'PersistentKeepalive = 25',
   ].join('\n');
 
   return {
     clientPrivateKey,
     clientPublicKey,
+    presharedKey,
     assignedIp,
     configFile,
   };

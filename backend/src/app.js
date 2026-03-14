@@ -19,6 +19,9 @@ const adminRoutes = require('./routes/admin');
 const { globalErrorHandler, notFound } = require('./middleware/errorHandler');
 
 const app = express();
+// Trust one proxy hop (nginx) so that express-rate-limit resolves the real
+// client IP from X-Forwarded-For rather than throwing ERR_ERL_UNEXPECTED_X_FORWARDED_FOR.
+app.set('trust proxy', 1);
 
 async function ensureAdminAccount() {
   const User = require('./models/User');
@@ -89,7 +92,58 @@ if (process.env.NODE_ENV !== 'test') {
 app.get('/health', (_req, res) => {
   res.json({ status: 'ok', app: 'IONE VPN', version: '1.0.0' });
 });
+// ─── Prometheus metrics ──────────────────────────────────────────────────
+// Exposes lightweight text-format metrics for Prometheus scraping.
+// Access is protected by a static bearer token (METRICS_TOKEN env var).
+// If METRICS_TOKEN is not set, the endpoint is disabled.
+app.get('/metrics', async (req, res) => {
+  const token = process.env.METRICS_TOKEN;
+  if (!token) return res.status(404).end();
 
+  const authHeader = req.headers['authorization'] || '';
+  if (authHeader !== `Bearer ${token}`) {
+    return res.status(401).end();
+  }
+
+  try {
+    const User = require('./models/User');
+    const Device = require('./models/Device');
+    const [totalUsers, activeDevices, freeUsers, premiumUsers, ultraUsers] = await Promise.all([
+      User.countDocuments(),
+      Device.countDocuments({ isActive: true }),
+      User.countDocuments({ 'subscription.tier': 'free' }),
+      User.countDocuments({ 'subscription.tier': { $in: ['premium', 'monthly', 'quarterly', 'yearly'] } }),
+      User.countDocuments({ 'subscription.tier': 'ultra' }),
+    ]);
+
+    const lines = [
+      '# HELP ione_vpn_users_total Total registered users',
+      '# TYPE ione_vpn_users_total gauge',
+      `ione_vpn_users_total ${totalUsers}`,
+      '# HELP ione_vpn_users_free Users on free tier',
+      '# TYPE ione_vpn_users_free gauge',
+      `ione_vpn_users_free ${freeUsers}`,
+      '# HELP ione_vpn_users_premium Users on premium tier',
+      '# TYPE ione_vpn_users_premium gauge',
+      `ione_vpn_users_premium ${premiumUsers}`,
+      '# HELP ione_vpn_users_ultra Users on ultra tier',
+      '# TYPE ione_vpn_users_ultra gauge',
+      `ione_vpn_users_ultra ${ultraUsers}`,
+      '# HELP ione_vpn_devices_active Active WireGuard devices',
+      '# TYPE ione_vpn_devices_active gauge',
+      `ione_vpn_devices_active ${activeDevices}`,
+      '# HELP ione_vpn_up API health (1 = up)',
+      '# TYPE ione_vpn_up gauge',
+      `ione_vpn_up 1`,
+    ];
+
+    res.set('Content-Type', 'text/plain; version=0.0.4; charset=utf-8');
+    res.send(lines.join('\n') + '\n');
+  } catch (err) {
+    logger.error('Metrics endpoint error:', err);
+    res.status(500).end();
+  }
+});
 // ─── Routes ──────────────────────────────────────────────────────────────────
 app.use('/api/v1/auth', authRoutes);
 app.use('/api/v1/vpn', vpnRoutes);
