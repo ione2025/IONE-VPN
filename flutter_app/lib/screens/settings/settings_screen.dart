@@ -25,6 +25,15 @@ class SettingsScreen extends StatelessWidget {
               label: 'Subscription',
               value: auth.user?.subscription.tier.toUpperCase() ?? 'FREE',
             ),
+            if ((auth.user?.role == 'admin') ||
+                ((auth.user?.email ?? '').toLowerCase() == 'admin@ionecenter.com'))
+              ListTile(
+                leading: const Icon(Icons.admin_panel_settings_outlined),
+                title: const Text('Admin Panel'),
+                subtitle: const Text('Manage users, tiers, and device details'),
+                trailing: const Icon(Icons.chevron_right),
+                onTap: () => Navigator.pushNamed(context, '/admin'),
+              ),
             ListTile(
               leading: const Icon(Icons.star_outline),
               title: const Text('Upgrade Plan'),

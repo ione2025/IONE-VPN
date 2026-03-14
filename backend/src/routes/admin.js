@@ -14,7 +14,7 @@ router.patch(
   protect,
   restrictTo('admin'),
   param('userId').notEmpty(),
-  body('tier').isIn(['free', 'monthly', 'quarterly', 'yearly']),
+  body('tier').isIn(['free', 'premium', 'ultra']),
   adminController.updateSubscription,
 );
 router.patch(

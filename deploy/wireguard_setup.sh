@@ -17,6 +17,14 @@ info() { echo -e "${GREEN}[WG]${NC} $*"; }
 ETH_IF=$(ip route | awk '/default/ {print $5; exit}')
 info "Detected network interface: $ETH_IF"
 
+# Ensure UFW forwarding policy allows VPN client egress traffic.
+if [ -f /etc/default/ufw ]; then
+  sed -i 's/^DEFAULT_FORWARD_POLICY=.*/DEFAULT_FORWARD_POLICY="ACCEPT"/' /etc/default/ufw || true
+fi
+ufw default allow routed || true
+ufw route allow in on "$WG_IF" out on "$ETH_IF" || true
+ufw route allow in on "$ETH_IF" out on "$WG_IF" || true
+
 # ─── Generate server keys ─────────────────────────────────────────────────────
 if [ ! -f "$WG_DIR/privatekey" ]; then
   info "Generating WireGuard server key pair..."
@@ -68,6 +76,7 @@ chmod 600 "$WG_DIR/$WG_IF.conf"
 # ─── Enable & start WireGuard ────────────────────────────────────────────────
 info "Starting WireGuard interface $WG_IF..."
 systemctl enable --now "wg-quick@$WG_IF"
+systemctl restart ufw || true
 wg show "$WG_IF"
 
 # ─── Print values needed for .env ────────────────────────────────────────────

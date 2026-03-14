@@ -25,6 +25,10 @@ function issueTokenPair(userId) {
   return { access, refresh };
 }
 
+function hashResetToken(token) {
+  return crypto.createHash('sha256').update(token).digest('hex');
+}
+
 // ─── Register ────────────────────────────────────────────────────────────────
 exports.register = async (req, res, next) => {
   try {
@@ -157,6 +161,79 @@ exports.deleteAccount = async (req, res, next) => {
     await user.deleteOne();
     logger.info(`Account deleted: ${user.email}`);
     res.json({ message: 'Account deleted successfully' });
+  } catch (err) {
+    next(err);
+  }
+};
+
+// ─── Forgot password ────────────────────────────────────────────────────────
+exports.forgotPassword = async (req, res, next) => {
+  try {
+    const errors = validationResult(req);
+    if (!errors.isEmpty()) {
+      return res.status(422).json({ errors: errors.array() });
+    }
+
+    const { email } = req.body;
+    const user = await User.findOne({ email }).select('+passwordResetToken +passwordResetExpires');
+
+    // Always return a generic success response to avoid account enumeration.
+    if (!user || !user.isActive) {
+      return res.json({ message: 'If the email exists, reset instructions have been sent.' });
+    }
+
+    const rawToken = crypto.randomBytes(32).toString('hex');
+    user.passwordResetToken = hashResetToken(rawToken);
+    user.passwordResetExpires = new Date(Date.now() + 1000 * 60 * 30); // 30 minutes
+    await user.save();
+
+    // Integrators can send this token by email/SMS. For now we log it so the
+    // flow works even when no mail provider is configured yet.
+    logger.info(`Password reset token generated for ${email}: ${rawToken}`);
+
+    const payload = {
+      message: 'If the email exists, reset instructions have been sent.',
+    };
+
+    // In non-production environments return token to help QA/mobile testing.
+    if (process.env.NODE_ENV !== 'production') {
+      payload.resetToken = rawToken;
+    }
+
+    res.json(payload);
+  } catch (err) {
+    next(err);
+  }
+};
+
+// ─── Reset password ─────────────────────────────────────────────────────────
+exports.resetPassword = async (req, res, next) => {
+  try {
+    const errors = validationResult(req);
+    if (!errors.isEmpty()) {
+      return res.status(422).json({ errors: errors.array() });
+    }
+
+    const { token, newPassword } = req.body;
+    const hashedToken = hashResetToken(token);
+
+    const user = await User.findOne({
+      passwordResetToken: hashedToken,
+      passwordResetExpires: { $gt: new Date() },
+      isActive: true,
+    }).select('+password');
+
+    if (!user) {
+      return res.status(400).json({ message: 'Invalid or expired reset token' });
+    }
+
+    user.password = newPassword;
+    user.passwordResetToken = undefined;
+    user.passwordResetExpires = undefined;
+    await user.save();
+
+    logger.info(`Password reset completed for user: ${user.email}`);
+    res.json({ message: 'Password reset successfully' });
   } catch (err) {
     next(err);
   }

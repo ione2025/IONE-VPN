@@ -6,8 +6,18 @@ const wireguardService = require('../services/wireguardService');
 const openvpnService = require('../services/openvpnService');
 const logger = require('../config/logger');
 
-const MAX_DEVICES_FREE = 5;
-const MAX_DEVICES_PREMIUM = 20;
+const TIER_DEVICE_LIMITS = {
+  free: 1,
+  premium: 10,
+  ultra: 50,
+};
+
+function normalizeTier(tier) {
+  if (tier === 'monthly' || tier === 'quarterly' || tier === 'yearly') {
+    return 'premium';
+  }
+  return tier || 'free';
+}
 
 // ─── Generate VPN config for a new device ────────────────────────────────────
 exports.generateConfig = async (req, res, next) => {
@@ -33,25 +43,18 @@ exports.generateConfig = async (req, res, next) => {
       isActive: true,
     }).sort({ updatedAt: -1 });
 
-    // Enforce device limit — but auto-replace the least-recently-used device
-    // if the limit is hit, rather than blocking the user.  Free users can
-    // always switch between devices seamlessly.
-    // NOTE: user.subscription.maxDevices defaults to 1 in DB for legacy users;
-    //       always derive the limit from the subscription tier instead so new
-    //       constants take effect without a DB migration.
-    const tier = user.subscription?.tier ?? 'free';
-    const maxDevices = tier === 'free' ? MAX_DEVICES_FREE : MAX_DEVICES_PREMIUM;
+    // Enforce strict per-tier device limits defined by product rules.
+    const tier = normalizeTier(user.subscription?.tier);
+    const maxDevices = TIER_DEVICE_LIMITS[tier] ?? TIER_DEVICE_LIMITS.free;
     const activeDevices = await Device.countDocuments({ userId, isActive: true });
     const activeDevicesForLimit = existingDevice ? Math.max(0, activeDevices - 1) : activeDevices;
 
     if (!existingDevice && activeDevicesForLimit >= maxDevices) {
-      // Auto-replace the oldest (least recently used) device instead of blocking.
-      const lruDevice = await Device.findOne({ userId, isActive: true })
-        .sort({ lastConnectedAt: 1, updatedAt: 1 });
-      if (lruDevice) {
-        logger.info(`Device limit reached for user ${userId}; replacing LRU device ${lruDevice.deviceId}`);
-        existingDevice = lruDevice;
-      }
+      return res.status(403).json({
+        message: `Device limit reached for ${tier} tier (${maxDevices} devices).`,
+        tier,
+        maxDevices,
+      });
     }
 
     let config;

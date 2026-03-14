@@ -5,11 +5,19 @@ const bcrypt = require('bcryptjs');
 
 const SALT_ROUNDS = parseInt(process.env.BCRYPT_SALT_ROUNDS || '12', 10);
 
+function normalizeTier(tier) {
+  if (tier === 'monthly' || tier === 'quarterly' || tier === 'yearly') {
+    return 'premium';
+  }
+  return tier || 'free';
+}
+
 // ─── Subscription sub-schema ──────────────────────────────────────────────────
 const subscriptionSchema = new mongoose.Schema({
   tier: {
     type: String,
-    enum: ['free', 'monthly', 'quarterly', 'yearly'],
+    // Keep legacy values for backward compatibility with existing records.
+    enum: ['free', 'premium', 'ultra', 'monthly', 'quarterly', 'yearly'],
     default: 'free',
   },
   stripeCustomerId: { type: String, select: false },
@@ -72,11 +80,24 @@ userSchema.methods.changedPasswordAfter = function (jwtIssuedAt) {
 };
 
 userSchema.methods.toPublic = function () {
+  const normalizedTier = normalizeTier(this.subscription?.tier);
+  const limits = normalizedTier === 'ultra'
+    ? { maxDevices: 50, unlimitedBandwidth: true, allServers: true }
+    : normalizedTier === 'premium'
+      ? { maxDevices: 10, unlimitedBandwidth: true, allServers: true }
+      : { maxDevices: 1, unlimitedBandwidth: false, allServers: false };
+
   return {
     id: this._id,
     email: this.email,
     role: this.role,
-    subscription: this.subscription,
+    subscription: {
+      ...(this.subscription?.toObject ? this.subscription.toObject() : this.subscription),
+      tier: normalizedTier,
+      maxDevices: limits.maxDevices,
+      unlimitedBandwidth: limits.unlimitedBandwidth,
+      allServers: limits.allServers,
+    },
     createdAt: this.createdAt,
   };
 };

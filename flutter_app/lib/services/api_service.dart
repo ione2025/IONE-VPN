@@ -89,6 +89,20 @@ class ApiService {
     return resp.data as Map<String, dynamic>;
   }
 
+  Future<Map<String, dynamic>> forgotPassword(String email) async {
+    final resp = await _dio.post('/auth/forgot-password', data: {
+      'email': email,
+    });
+    return resp.data as Map<String, dynamic>;
+  }
+
+  Future<void> resetPassword(String token, String newPassword) async {
+    await _dio.post('/auth/reset-password', data: {
+      'token': token,
+      'newPassword': newPassword,
+    });
+  }
+
   Future<Map<String, dynamic>> getMe() async {
     final resp = await _dio.get('/auth/me');
     return resp.data as Map<String, dynamic>;
@@ -151,6 +165,36 @@ class ApiService {
 
   Future<void> revokeDevice(String deviceId) async {
     await _dio.delete('/devices/$deviceId');
+  }
+
+  // ─── Admin ────────────────────────────────────────────────────────────────
+
+  Future<Map<String, dynamic>> getAdminDashboard() async {
+    final resp = await _dio.get('/admin/dashboard');
+    return resp.data as Map<String, dynamic>;
+  }
+
+  Future<Map<String, dynamic>> getAdminUsers({
+    int page = 1,
+    int limit = 50,
+    bool includeDevices = true,
+  }) async {
+    final resp = await _dio.get('/admin/users', queryParameters: {
+      'page': page,
+      'limit': limit,
+      'includeDevices': includeDevices,
+    });
+    return resp.data as Map<String, dynamic>;
+  }
+
+  Future<Map<String, dynamic>> updateUserSubscription({
+    required String userId,
+    required String tier,
+  }) async {
+    final resp = await _dio.patch('/admin/users/$userId/subscription', data: {
+      'tier': tier,
+    });
+    return resp.data as Map<String, dynamic>;
   }
 
   // ─── Token storage helpers ────────────────────────────────────────────────

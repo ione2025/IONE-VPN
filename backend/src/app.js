@@ -20,6 +20,53 @@ const { globalErrorHandler, notFound } = require('./middleware/errorHandler');
 
 const app = express();
 
+async function ensureAdminAccount() {
+  const User = require('./models/User');
+
+  const adminEmail = (process.env.ADMIN_EMAIL || 'admin@ionecenter.com').toLowerCase();
+  const adminPassword = process.env.ADMIN_PASSWORD;
+
+  const existing = await User.findOne({ email: adminEmail }).select('+password');
+  if (existing) {
+    let changed = false;
+    if (existing.role !== 'admin') {
+      existing.role = 'admin';
+      changed = true;
+    }
+    if (existing.subscription?.tier !== 'ultra') {
+      existing.subscription.tier = 'ultra';
+      existing.subscription.maxDevices = 50;
+      existing.subscription.unlimitedBandwidth = true;
+      existing.subscription.allServers = true;
+      changed = true;
+    }
+    if (changed) {
+      await existing.save();
+      logger.info(`Admin account updated: ${adminEmail}`);
+    }
+    return;
+  }
+
+  if (!adminPassword) {
+    logger.warn(`ADMIN_PASSWORD not set; cannot create admin account ${adminEmail}`);
+    return;
+  }
+
+  await User.create({
+    email: adminEmail,
+    password: adminPassword,
+    role: 'admin',
+    subscription: {
+      tier: 'ultra',
+      maxDevices: 50,
+      unlimitedBandwidth: true,
+      allServers: true,
+    },
+  });
+
+  logger.info(`Admin account created: ${adminEmail}`);
+}
+
 // ─── Security middleware ──────────────────────────────────────────────────────
 app.use(helmet());
 app.use(cors({
@@ -60,6 +107,7 @@ const PORT = process.env.PORT || 3000;
 async function start() {
   await connectDB();
   await connectRedis();
+  await ensureAdminAccount();
   // Rebuild the WireGuard IP pool from existing DB records so allocation
   // is correct after server restarts (usedIps is otherwise in-memory only).
   const wireguardService = require('./services/wireguardService');

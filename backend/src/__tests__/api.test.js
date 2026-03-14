@@ -125,6 +125,61 @@ describe('POST /api/v1/auth/login', () => {
   });
 });
 
+// ─── Auth: forgot/reset password ────────────────────────────────────────────
+describe('POST /api/v1/auth/forgot-password', () => {
+  it('returns generic success for unknown email', async () => {
+    const res = await request(app)
+      .post('/api/v1/auth/forgot-password')
+      .send({ email: 'unknown@example.com' });
+
+    expect(res.status).toBe(200);
+    expect(res.body.message).toMatch(/if the email exists/i);
+  });
+
+  it('generates a reset token for existing user', async () => {
+    await request(app)
+      .post('/api/v1/auth/register')
+      .send({ email: 'forgot@example.com', password: 'Pass12345' });
+
+    const res = await request(app)
+      .post('/api/v1/auth/forgot-password')
+      .send({ email: 'forgot@example.com' });
+
+    expect(res.status).toBe(200);
+    expect(res.body.message).toMatch(/if the email exists/i);
+    // In test env we expose token to let client flow be verified end-to-end.
+    expect(res.body).toHaveProperty('resetToken');
+  });
+});
+
+describe('POST /api/v1/auth/reset-password', () => {
+  it('resets password with a valid token and allows login with new password', async () => {
+    await request(app)
+      .post('/api/v1/auth/register')
+      .send({ email: 'reset@example.com', password: 'Pass12345' });
+
+    const forgot = await request(app)
+      .post('/api/v1/auth/forgot-password')
+      .send({ email: 'reset@example.com' });
+
+    const token = forgot.body.resetToken;
+    expect(token).toBeTruthy();
+
+    const reset = await request(app)
+      .post('/api/v1/auth/reset-password')
+      .send({ token, newPassword: 'NewPass123' });
+
+    expect(reset.status).toBe(200);
+
+    const login = await request(app)
+      .post('/api/v1/auth/login')
+      .send({ email: 'reset@example.com', password: 'NewPass123' });
+
+    expect(login.status).toBe(200);
+    expect(login.body).toHaveProperty('tokens.access');
+  });
+});
+
 // ─── Auth: me ─────────────────────────────────────────────────────────────────
 describe('GET /api/v1/auth/me', () => {
   it('returns the current user', async () => {

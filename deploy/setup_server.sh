@@ -30,11 +30,24 @@ fi
 info "Configuring firewall..."
 ufw default deny incoming
 ufw default allow outgoing
+# WireGuard requires forwarded/routed traffic to be accepted.
+ufw default allow routed
 ufw allow ssh
 ufw allow 80/tcp    # HTTP (Let's Encrypt challenge)
 ufw allow 443/tcp   # HTTPS
 ufw allow 51820/udp # WireGuard
 ufw allow 1194/udp  # OpenVPN
+
+# Persist routed-forward policy in UFW config so VPN traffic survives reboots.
+sed -i 's/^DEFAULT_FORWARD_POLICY=.*/DEFAULT_FORWARD_POLICY="ACCEPT"/' /etc/default/ufw || true
+
+# Allow forwarding between wg0 and the primary egress interface in UFW.
+ETH_IF=$(ip route | awk '/default/ {print $5; exit}')
+if [ -n "${ETH_IF:-}" ]; then
+  ufw route allow in on wg0 out on "$ETH_IF" || true
+  ufw route allow in on "$ETH_IF" out on wg0 || true
+fi
+
 ufw --force enable
 info "Firewall active:"
 ufw status

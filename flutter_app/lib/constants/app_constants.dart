@@ -18,6 +18,7 @@ class AppConstants {
   // ─── Subscription ─────────────────────────────────────────────────────────
   static const int freeMaxDevices = 1;
   static const int premiumMaxDevices = 10;
+  static const int ultraMaxDevices = 50;
 
   // ─── WireGuard ────────────────────────────────────────────────────────────
   static const int wgPort = 51820;

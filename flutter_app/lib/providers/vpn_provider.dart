@@ -154,11 +154,16 @@ class VpnProvider extends ChangeNotifier {
         wgConfig = await _storage.read(key: AppConstants.keyWgConfig);
       }
 
-        // Always refresh config on connect so key/endpoint rotations on the
-        // server are picked up immediately across all clients.
-        final mustFetchNewConfig = wgQuickConfigOverride == null;
+      final hadCachedConfig = wgConfig != null && wgConfig.trim().isNotEmpty;
 
-      // 2. Request a fresh config from the backend when we have nothing cached.
+        // Reuse cached config by default to keep a stable key pair per device.
+        // Rotating keys on every connect can cause transient "connected but
+        // no traffic" behavior when reconnects happen rapidly.
+        final mustFetchNewConfig = wgQuickConfigOverride == null && !hadCachedConfig;
+
+      // 2. Request a fresh config from the backend.
+      // If that fails, keep using the last known-good config so existing users
+      // can still connect across Android/iOS/Windows during transient API issues.
       if (mustFetchNewConfig) {
         try {
           final configData = await _api.generateVpnConfig(
@@ -187,22 +192,21 @@ class VpnProvider extends ChangeNotifier {
         } on DioException catch (e) {
           final errMsg = _readableApiError(e);
           debugPrint('[VpnProvider] generateVpnConfig failed: $errMsg');
-          // On mobile the hardcoded fallback config has no registered server
-          // peer and will never connect. Surface the real error so the user
-          // knows exactly what went wrong.
-          if (!kIsWeb && !Platform.isWindows) {
+          // If we have a cached config, proceed with it as fallback.
+          if (!hadCachedConfig) {
             _errorMessage = errMsg;
             _setStatus(VpnStatus.error);
             return;
           }
-          // Windows: fall through and use wgDefaultConfig as fallback.
+          _errorMessage = null;
         } catch (e) {
           debugPrint('[VpnProvider] generateVpnConfig unexpected error: $e');
-          if (!kIsWeb && !Platform.isWindows) {
+          if (!hadCachedConfig) {
             _errorMessage = 'Cannot reach VPN server. Check your connection.';
             _setStatus(VpnStatus.error);
             return;
           }
+          _errorMessage = null;
         }
       }
 

@@ -1,4 +1,7 @@
 import 'package:flutter/material.dart';
+import 'package:flutter/services.dart';
+
+import '../../constants/app_constants.dart';
 
 import '../../constants/app_theme.dart';
 
@@ -21,7 +24,7 @@ class SubscriptionScreen extends StatelessWidget {
             ),
             const SizedBox(height: 8),
             Text(
-              'Unlimited bandwidth · 10 devices · All servers',
+              'Choose your tier and pay by scanning the QR code',
               style: Theme.of(context).textTheme.bodyMedium,
               textAlign: TextAlign.center,
             ),
@@ -33,9 +36,9 @@ class SubscriptionScreen extends StatelessWidget {
               price: '\$0',
               period: 'forever',
               features: const [
-                '1 device',
-                'Singapore server only',
-                '10 GB / month bandwidth',
+                '1 active device per account',
+                'Basic server access',
+                'Standard bandwidth',
                 'WireGuard protocol',
               ],
               isCurrent: true,
@@ -43,56 +46,38 @@ class SubscriptionScreen extends StatelessWidget {
             ),
             const SizedBox(height: 16),
 
-            // Monthly
+            // Premium
             _PlanCard(
-              title: 'Monthly VIP',
-              price: '\$5.99',
+              title: 'Premium',
+              price: '\$30',
               period: 'per month',
               features: const [
-                'Up to 10 devices',
-                'All server locations',
+                '10 active devices',
                 'Unlimited bandwidth',
-                'All protocols',
-                'Priority support',
-              ],
-              highlight: false,
-              onSelect: () => _showComingSoon(context),
-            ),
-            const SizedBox(height: 16),
-
-            // Quarterly
-            _PlanCard(
-              title: 'Quarterly VIP',
-              price: '\$14.99',
-              period: 'every 3 months',
-              savingBadge: 'Save 17%',
-              features: const [
-                'Everything in Monthly',
-                '3-month commitment',
-                'Lower per-month cost',
+                'All server locations',
               ],
               highlight: true,
-              onSelect: () => _showComingSoon(context),
+              onSelect: () => _showPaymentDialog(context, 'premium', 30),
             ),
             const SizedBox(height: 16),
 
-            // Yearly
+            // Ultra
             _PlanCard(
-              title: 'Yearly VIP',
-              price: '\$39.99',
-              period: 'per year',
-              savingBadge: 'Save 44%',
+              title: 'Ultra',
+              price: '\$50',
+              period: 'per month',
               features: const [
-                'Everything in Monthly',
-                'Best value',
-                'Annual billing',
+                '50 active devices',
+                'Unlimited bandwidth',
+                'All server locations',
+                'Highest priority support',
               ],
-              onSelect: () => _showComingSoon(context),
+              onSelect: () => _showPaymentDialog(context, 'ultra', 50),
             ),
 
             const SizedBox(height: 28),
             Text(
-              'Payments processed securely via Stripe.\nCancel anytime.',
+              'After payment, your tier can be activated from the admin panel.',
               textAlign: TextAlign.center,
               style: Theme.of(context).textTheme.bodyMedium,
             ),
@@ -102,14 +87,61 @@ class SubscriptionScreen extends StatelessWidget {
     );
   }
 
-  void _showComingSoon(BuildContext context) {
+  Future<void> _showPaymentDialog(BuildContext context, String tier, int amount) async {
     showDialog(
       context: context,
       builder: (_) => AlertDialog(
-        title: const Text('Coming Soon'),
-        content:
-            const Text('Payment integration will be available in the next release.'),
+        title: Text('Upgrade to ${tier[0].toUpperCase()}${tier.substring(1)}'),
+        content: SingleChildScrollView(
+          child: Column(
+            mainAxisSize: MainAxisSize.min,
+            children: [
+              Text('Price: \$$amount per month'),
+              const SizedBox(height: 10),
+              const Text('Scan this QR code in Alipay to pay:'),
+              const SizedBox(height: 12),
+              ClipRRect(
+                borderRadius: BorderRadius.circular(12),
+                child: Image.asset(
+                  'assets/images/alipay_qr.png',
+                  width: 260,
+                  height: 380,
+                  fit: BoxFit.cover,
+                  errorBuilder: (_, __, ___) => Container(
+                    width: 260,
+                    padding: const EdgeInsets.all(12),
+                    decoration: BoxDecoration(
+                      border: Border.all(color: AppTheme.primaryBlue),
+                      borderRadius: BorderRadius.circular(12),
+                    ),
+                    child: const Text(
+                      'QR image not found at assets/images/alipay_qr.png.\nAdd your provided QR image to that path.',
+                      textAlign: TextAlign.center,
+                    ),
+                  ),
+                ),
+              ),
+              const SizedBox(height: 10),
+              Text(
+                'Tier limits:\nFree ${AppConstants.freeMaxDevices} device\nPremium ${AppConstants.premiumMaxDevices} devices\nUltra ${AppConstants.ultraMaxDevices} devices',
+                textAlign: TextAlign.center,
+              ),
+            ],
+          ),
+        ),
         actions: [
+          TextButton(
+            onPressed: () async {
+              await Clipboard.setData(ClipboardData(
+                text: 'Upgrade request: tier=$tier, amount=\$$amount/month',
+              ));
+              if (!context.mounted) return;
+              ScaffoldMessenger.of(context).showSnackBar(
+                const SnackBar(content: Text('Upgrade request copied')),
+              );
+            },
+            child: const Text('Copy Request'),
+          ),
           TextButton(
               onPressed: () => Navigator.pop(context),
               child: const Text('OK')),
@@ -125,7 +157,6 @@ class _PlanCard extends StatelessWidget {
     required this.price,
     required this.period,
     required this.features,
-    this.savingBadge,
     this.highlight = false,
     this.isCurrent = false,
     required this.onSelect,
@@ -135,7 +166,6 @@ class _PlanCard extends StatelessWidget {
   final String price;
   final String period;
   final List<String> features;
-  final String? savingBadge;
   final bool highlight;
   final bool isCurrent;
   final VoidCallback? onSelect;
@@ -162,22 +192,6 @@ class _PlanCard extends StatelessWidget {
                         .titleLarge
                         ?.copyWith(fontWeight: FontWeight.w700)),
                 const Spacer(),
-                if (savingBadge != null)
-                  Container(
-                    padding:
-                        const EdgeInsets.symmetric(horizontal: 10, vertical: 4),
-                    decoration: BoxDecoration(
-                      color: AppTheme.successGreen.withValues(alpha: 0.15),
-                      borderRadius: BorderRadius.circular(20),
-                    ),
-                    child: Text(
-                      savingBadge!,
-                      style: const TextStyle(
-                          color: AppTheme.successGreen,
-                          fontWeight: FontWeight.w600,
-                          fontSize: 12),
-                    ),
-                  ),
               ],
             ),
             const SizedBox(height: 8),

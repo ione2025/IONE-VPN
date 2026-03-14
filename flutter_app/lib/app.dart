@@ -9,6 +9,7 @@ import 'screens/home/home_screen.dart';
 import 'screens/servers/server_selection_screen.dart';
 import 'screens/settings/settings_screen.dart';
 import 'screens/subscription/subscription_screen.dart';
+import 'screens/admin/admin_panel_screen.dart';
 
 class IoneVpnApp extends StatelessWidget {
   const IoneVpnApp({super.key});
@@ -31,6 +32,7 @@ class IoneVpnApp extends StatelessWidget {
         '/servers': (_) => const ServerSelectionScreen(),
         '/settings': (_) => const SettingsScreen(),
         '/subscription': (_) => const SubscriptionScreen(),
+        '/admin': (_) => const AdminPanelScreen(),
       },
       // Redirect unauthenticated access
       onGenerateRoute: (settings) {

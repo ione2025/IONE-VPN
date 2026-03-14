@@ -190,18 +190,36 @@ async function getServerPublicKey() {
   return (SERVER_PUBLIC_KEY || '').trim();
 }
 
+async function getLiveWireGuardPort() {
+  const confPath = path.join(WG_CONFIG_DIR, `${WG_INTERFACE}.conf`);
+  try {
+    const conf = await fs.readFile(confPath, 'utf8');
+    const match = conf.match(/^\s*ListenPort\s*=\s*(\d+)\s*$/im);
+    if (match && match[1]) return match[1].trim();
+  } catch (_) {
+    // Ignore and fall back to env.
+  }
+  return '';
+}
+
 /**
  * Return server endpoint for generated client configs.
  * Prefer explicit WG_SERVER_ENDPOINT; otherwise derive from SERVER_IP.
  */
-function getServerEndpoint() {
+async function getServerEndpoint() {
   const explicit = (SERVER_ENDPOINT || '').trim();
-  if (explicit) return explicit;
+  const livePort = await getLiveWireGuardPort();
+  if (explicit) {
+    if (!livePort) return explicit;
+    const host = explicit.split(':')[0];
+    if (!host) return explicit;
+    return `${host}:${livePort}`;
+  }
 
   const serverIp = (process.env.SERVER_IP || '').trim();
   if (!serverIp) return '';
 
-  const port = (process.env.WG_PORT || '51820').trim();
+  const port = (livePort || process.env.WG_PORT || '51820').trim();
   return `${serverIp}:${port}`;
 }
 
@@ -230,7 +248,7 @@ function allocateIp() {
  */
 exports.addPeer = async (userId) => {
   const serverPublicKey = await getServerPublicKey();
-  const serverEndpoint = getServerEndpoint();
+  const serverEndpoint = await getServerEndpoint();
 
   if (!serverPublicKey) {
     throw new Error('WireGuard server public key is missing. Set WG_SERVER_PUBLIC_KEY or /etc/wireguard/publickey.');
@@ -255,7 +273,33 @@ exports.addPeer = async (userId) => {
     logger.warn(`Could not write WireGuard config (non-fatal in dev/CI): ${err.message}`);
   });
 
-  await syncConfig();
+  // Prefer syncconf so runtime and disk config stay identical.
+  // If syncconf fails (e.g. malformed wg0.conf), fall back to adding the peer
+  // directly in the live interface so /vpn/config still succeeds.
+  let applied = false;
+  try {
+    await syncConfig();
+    applied = true;
+  } catch (err) {
+    logger.warn(`syncconf failed while adding peer; trying runtime wg set fallback: ${err.message}`);
+    try {
+      await execFileAsync('wg', [
+        'set',
+        WG_INTERFACE,
+        'peer',
+        clientPublicKey,
+        'allowed-ips',
+        assignedIp,
+      ]);
+      applied = true;
+    } catch (fallbackErr) {
+      logger.error(`Runtime wg set fallback also failed: ${fallbackErr.message}`);
+    }
+  }
+
+  if (!applied) {
+    throw new Error('Could not apply new WireGuard peer (syncconf and runtime fallback both failed).');
+  }
 
   // Build the client config file
   const configFile = [

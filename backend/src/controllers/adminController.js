@@ -6,6 +6,19 @@ const wireguardService = require('../services/wireguardService');
 const serverMonitor = require('../services/serverMonitor');
 const logger = require('../config/logger');
 
+const TIER_DEVICE_LIMITS = {
+  free: 1,
+  premium: 10,
+  ultra: 50,
+};
+
+function normalizeTier(tier) {
+  if (tier === 'monthly' || tier === 'quarterly' || tier === 'yearly') {
+    return 'premium';
+  }
+  return tier || 'free';
+}
+
 // ─── Dashboard overview ───────────────────────────────────────────────────────
 exports.dashboard = async (_req, res, next) => {
   try {
@@ -15,13 +28,17 @@ exports.dashboard = async (_req, res, next) => {
       serverMonitor.getDetailedStats(),
     ]);
 
-    const premiumUsers = await User.countDocuments({
-      'subscription.tier': { $ne: 'free' },
-    });
+    const [freeUsers, premiumUsers, ultraUsers] = await Promise.all([
+      User.countDocuments({ 'subscription.tier': 'free' }),
+      User.countDocuments({ 'subscription.tier': { $in: ['premium', 'monthly', 'quarterly', 'yearly'] } }),
+      User.countDocuments({ 'subscription.tier': 'ultra' }),
+    ]);
 
     res.json({
       totalUsers,
+      freeUsers,
       premiumUsers,
+      ultraUsers,
       activeDevices,
       serverStats,
     });
@@ -36,13 +53,53 @@ exports.listUsers = async (req, res, next) => {
     const page = Math.max(1, parseInt(req.query.page) || 1);
     const limit = Math.min(100, parseInt(req.query.limit) || 20);
     const skip = (page - 1) * limit;
+    const includeDevices = String(req.query.includeDevices || 'false').toLowerCase() === 'true';
 
     const [users, total] = await Promise.all([
-      User.find().skip(skip).limit(limit).select('-password'),
+      User.find().skip(skip).limit(limit).select('-password').sort({ createdAt: -1 }),
       User.countDocuments(),
     ]);
 
-    res.json({ users, total, page, pages: Math.ceil(total / limit) });
+    const userIds = users.map((u) => u._id);
+    const activeDevices = await Device.find({ userId: { $in: userIds }, isActive: true })
+      .sort({ updatedAt: -1 })
+      .select('deviceId userId name platform protocol assignedIp lastConnectedAt updatedAt createdAt');
+
+    const byUser = new Map();
+    for (const d of activeDevices) {
+      const key = String(d.userId);
+      if (!byUser.has(key)) byUser.set(key, []);
+      byUser.get(key).push({
+        deviceId: d.deviceId,
+        name: d.name,
+        platform: d.platform,
+        protocol: d.protocol,
+        assignedIp: d.assignedIp,
+        lastConnectedAt: d.lastConnectedAt,
+        createdAt: d.createdAt,
+        updatedAt: d.updatedAt,
+      });
+    }
+
+    const payloadUsers = users.map((u) => {
+      const user = u.toPublic();
+      const tier = normalizeTier(user.subscription?.tier);
+      const devices = byUser.get(String(u._id)) || [];
+      return {
+        ...user,
+        subscription: {
+          ...(user.subscription || {}),
+          tier,
+          maxDevices: TIER_DEVICE_LIMITS[tier],
+          unlimitedBandwidth: tier !== 'free',
+          allServers: tier !== 'free',
+        },
+        activeDeviceCount: devices.length,
+        devices: includeDevices ? devices : undefined,
+      };
+    });
+
+    res.json({ users: payloadUsers, total, page, pages: Math.ceil(total / limit) });
   } catch (err) {
     next(err);
   }
@@ -56,9 +113,8 @@ exports.updateSubscription = async (req, res, next) => {
 
     const tierConfig = {
       free: { maxDevices: 1, unlimitedBandwidth: false, allServers: false },
-      monthly: { maxDevices: 10, unlimitedBandwidth: true, allServers: true },
-      quarterly: { maxDevices: 10, unlimitedBandwidth: true, allServers: true },
-      yearly: { maxDevices: 10, unlimitedBandwidth: true, allServers: true },
+      premium: { maxDevices: 10, unlimitedBandwidth: true, allServers: true },
+      ultra: { maxDevices: 50, unlimitedBandwidth: true, allServers: true },
     };
 
     if (!tierConfig[tier]) {

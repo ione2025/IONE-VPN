@@ -16,6 +16,7 @@ class _LoginScreenState extends State<LoginScreen> {
   final _emailCtrl = TextEditingController();
   final _passCtrl = TextEditingController();
   bool _obscurePass = true;
+  bool _obscureResetPass = true;
   bool _loading = false;
   bool _isRegisterMode = false;
 
@@ -48,6 +49,170 @@ class _LoginScreenState extends State<LoginScreen> {
         ),
       );
     }
+  }
+
+  Future<void> _showForgotPasswordDialog() async {
+    final auth = context.read<AuthProvider>();
+    final messenger = ScaffoldMessenger.of(context);
+    final navigator = Navigator.of(context);
+    final emailCtrl = TextEditingController(text: _emailCtrl.text.trim());
+    final tokenCtrl = TextEditingController();
+    final newPassCtrl = TextEditingController();
+    bool loading = false;
+    String? localError;
+
+    await showDialog<void>(
+      context: context,
+      builder: (context) {
+        return StatefulBuilder(
+          builder: (context, setLocalState) {
+            Future<void> requestToken() async {
+              final email = emailCtrl.text.trim();
+              if (email.isEmpty || !email.contains('@')) {
+                setLocalState(() => localError = 'Enter a valid email');
+                return;
+              }
+
+              setLocalState(() {
+                loading = true;
+                localError = null;
+              });
+
+              final token = await auth.forgotPassword(email);
+
+              if (!mounted) return;
+
+              setLocalState(() {
+                loading = false;
+                // In production token is sent via configured channel.
+                // In test/dev it may be returned directly to simplify QA.
+                if (token != null && token.isNotEmpty) {
+                  tokenCtrl.text = token;
+                }
+              });
+
+              messenger.showSnackBar(
+                const SnackBar(
+                  content: Text('Reset instructions sent. Enter token and new password.'),
+                ),
+              );
+            }
+
+            Future<void> submitReset() async {
+              final token = tokenCtrl.text.trim();
+              final newPassword = newPassCtrl.text;
+
+              if (token.length < 16) {
+                setLocalState(() => localError = 'Enter a valid reset token');
+                return;
+              }
+              if (newPassword.length < 8) {
+                setLocalState(() => localError = 'New password must be at least 8 characters');
+                return;
+              }
+
+              setLocalState(() {
+                loading = true;
+                localError = null;
+              });
+
+              final ok = await auth.resetPassword(
+                token: token,
+                newPassword: newPassword,
+              );
+
+              if (!mounted) return;
+
+              setLocalState(() => loading = false);
+
+              if (ok) {
+                if (mounted) {
+                  navigator.pop();
+                  messenger.showSnackBar(
+                    const SnackBar(content: Text('Password reset successful. Please sign in.')),
+                  );
+                }
+              } else {
+                setLocalState(() => localError = auth.errorMessage ?? 'Password reset failed');
+              }
+            }
+
+            return AlertDialog(
+              title: const Text('Forgot Password'),
+              content: SingleChildScrollView(
+                child: Column(
+                  mainAxisSize: MainAxisSize.min,
+                  children: [
+                    TextField(
+                      controller: emailCtrl,
+                      keyboardType: TextInputType.emailAddress,
+                      decoration: const InputDecoration(
+                        labelText: 'Email',
+                      ),
+                    ),
+                    const SizedBox(height: 10),
+                    TextField(
+                      controller: tokenCtrl,
+                      decoration: const InputDecoration(
+                        labelText: 'Reset token',
+                      ),
+                    ),
+                    const SizedBox(height: 10),
+                    TextField(
+                      controller: newPassCtrl,
+                      obscureText: _obscureResetPass,
+                      decoration: InputDecoration(
+                        labelText: 'New password',
+                        suffixIcon: IconButton(
+                          icon: Icon(_obscureResetPass
+                              ? Icons.visibility_outlined
+                              : Icons.visibility_off_outlined),
+                          onPressed: () {
+                            setState(() => _obscureResetPass = !_obscureResetPass);
+                            setLocalState(() {});
+                          },
+                        ),
+                      ),
+                    ),
+                    if (localError != null) ...[
+                      const SizedBox(height: 10),
+                      Text(
+                        localError!,
+                        style: const TextStyle(color: AppTheme.errorRed),
+                      ),
+                    ],
+                  ],
+                ),
+              ),
+              actions: [
+                TextButton(
+                  onPressed: loading ? null : () => Navigator.of(context).pop(),
+                  child: const Text('Close'),
+                ),
+                TextButton(
+                  onPressed: loading ? null : requestToken,
+                  child: const Text('Send Token'),
+                ),
+                ElevatedButton(
+                  onPressed: loading ? null : submitReset,
+                  child: loading
+                      ? const SizedBox(
+                          width: 16,
+                          height: 16,
+                          child: CircularProgressIndicator(strokeWidth: 2),
+                        )
+                      : const Text('Reset Password'),
+                ),
+              ],
+            );
+          },
+        );
+      },
+    );
+
+    emailCtrl.dispose();
+    tokenCtrl.dispose();
+    newPassCtrl.dispose();
   }
 
   @override
@@ -163,7 +328,7 @@ class _LoginScreenState extends State<LoginScreen> {
                   const SizedBox(height: 8),
                   Center(
                     child: TextButton(
-                      onPressed: () {},
+                      onPressed: _showForgotPasswordDialog,
                       child: const Text('Forgot password?'),
                     ),
                   ),

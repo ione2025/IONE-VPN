@@ -1,0 +1,5 @@
+Place the user-provided Alipay QR image here as:
+
+assets/images/alipay_qr.png
+
+The subscription screen will display it for Premium ($30/month) and Ultra ($50/month) upgrades.

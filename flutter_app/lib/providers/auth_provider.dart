@@ -83,6 +83,36 @@ class AuthProvider extends ChangeNotifier {
     }
   }
 
+  // ─── Forgot password ─────────────────────────────────────────────────────
+  Future<String?> forgotPassword(String email) async {
+    _errorMessage = null;
+    try {
+      final data = await _api.forgotPassword(email);
+      notifyListeners();
+      return data['resetToken'] as String?;
+    } catch (e) {
+      _errorMessage = _extractError(e);
+      notifyListeners();
+      return null;
+    }
+  }
+
+  Future<bool> resetPassword({
+    required String token,
+    required String newPassword,
+  }) async {
+    _errorMessage = null;
+    try {
+      await _api.resetPassword(token, newPassword);
+      notifyListeners();
+      return true;
+    } catch (e) {
+      _errorMessage = _extractError(e);
+      notifyListeners();
+      return false;
+    }
+  }
+
   // ─── Logout ───────────────────────────────────────────────────────────────
   Future<void> logout() async {
     await _api.clearTokens();
