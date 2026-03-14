@@ -69,4 +69,6 @@ PersistentKeepalive = 25
   static const String wgConfigRevisionValue = 'server-fixed-2026-03-15-v2';
   /// Set to 'true' while the user is connected; drives auto-reconnect on launch.
   static const String keyAutoConnect = 'ione_auto_connect';
+  /// Kill switch preference ('true' | 'false').
+  static const String keyKillSwitch = 'ione_kill_switch';
 }
