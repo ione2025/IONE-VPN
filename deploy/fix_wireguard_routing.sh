@@ -6,7 +6,7 @@
 set -euo pipefail
 
 WG_IF="${WG_INTERFACE:-wg0}"
-WG_PORT="${WG_PORT:-51820}"
+WG_PORT="${WG_PORT:-443}"  # Default matches app_constants.dart wgPort
 ETH_IF=$(ip route | awk '/default/ {print $5; exit}')
 
 if [ -z "${ETH_IF:-}" ]; then
@@ -39,6 +39,9 @@ ufw --force reload || true
 iptables -C FORWARD -i "$WG_IF" -j ACCEPT 2>/dev/null || iptables -A FORWARD -i "$WG_IF" -j ACCEPT
 iptables -C FORWARD -o "$WG_IF" -j ACCEPT 2>/dev/null || iptables -A FORWARD -o "$WG_IF" -j ACCEPT
 iptables -t nat -C POSTROUTING -o "$ETH_IF" -j MASQUERADE 2>/dev/null || iptables -t nat -A POSTROUTING -o "$ETH_IF" -j MASQUERADE
+# IPv6 NAT – required so client 10.8.0.x addresses are translated to the
+# server's public IPv6 address before packets leave the egress interface.
+ip6tables -t nat -C POSTROUTING -o "$ETH_IF" -j MASQUERADE 2>/dev/null || ip6tables -t nat -A POSTROUTING -o "$ETH_IF" -j MASQUERADE
 
 # Persist iptables rules if netfilter-persistent is available.
 if command -v netfilter-persistent >/dev/null 2>&1; then

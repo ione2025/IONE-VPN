@@ -795,7 +795,12 @@ while (\$true) {
     String? forcedEndpoint,
   }) async {
     // ── Determine optimal MTU ──────────────────────────────────────────────
-    int mtu = 1280; // conservative default for mobile/carrier networks
+    // 1380 = standard Ethernet 1500 − 80 bytes WireGuard/UDP/IP overhead
+    // − 40 bytes safety margin for PPPoE/carrier encapsulation.
+    // This is the same value used by Mullvad and ProtonVPN for mobile clients.
+    // The server sends MTU=1420 but we use 1380 client-side so that devices
+    // on DSL/PPPoE (which reduce Ethernet MTU by 8 bytes) never fragment.
+    int mtu = 1380;
     try {
       if (!kIsWeb) {
         final interfaces = await NetworkInterface.list(
@@ -804,14 +809,13 @@ while (\$true) {
         );
         for (final iface in interfaces) {
           if (iface.name.toLowerCase().contains('lo')) continue;
-          // NetworkInterface does not expose MTU directly in Dart, but the
-          // Keep a conservative MTU to avoid PMTU/fragmentation blackholes.
-          mtu = 1280;
+          // Conservative but effective for all ISP encapsulations.
+          mtu = 1380;
           break;
         }
       }
     } catch (_) {
-      // Any failure → keep the safe default (1280).
+      // Any failure → keep the safe default (1380).
     }
 
     // ── Patch the config lines ─────────────────────────────────────────────
@@ -831,10 +835,12 @@ while (\$true) {
       // Remove any existing MTU line — we will inject the detected value.
       if (inInterface && trimmed.startsWith('mtu')) continue;
 
-      // Force IPv4-only full tunnel to avoid IPv6 blackholes on servers
-      // without IPv6 forwarding/NAT.
+      // Full-tunnel: route all IPv4 and IPv6 through the VPN.
+      // ::/0 prevents IPv6 leak-outs that expose the real IP address.
+      // The server is configured with ip6tables MASQUERADE so IPv6 traffic
+      // is correctly NATted through the server's public IPv6 address.
       if (!inInterface && trimmed.startsWith('allowedips')) {
-        result.add('AllowedIPs = 0.0.0.0/0');
+        result.add('AllowedIPs = 0.0.0.0/0, ::/0');
         continue;
       }
 

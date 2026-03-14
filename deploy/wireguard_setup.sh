@@ -7,7 +7,9 @@ set -euo pipefail
 
 WG_IF="wg0"
 WG_DIR="/etc/wireguard"
-WG_PORT="51820"
+# Port 443/udp: disguises WireGuard as HTTPS traffic, bypassing DPI firewalls
+# that block non-standard UDP ports (common in hotels, airports, corporate nets).
+WG_PORT="443"
 SERVER_SUBNET="10.8.0.1/24"
 
 GREEN='\033[0;32m'; NC='\033[0m'
@@ -22,6 +24,7 @@ if [ -f /etc/default/ufw ]; then
   sed -i 's/^DEFAULT_FORWARD_POLICY=.*/DEFAULT_FORWARD_POLICY="ACCEPT"/' /etc/default/ufw || true
 fi
 ufw default allow routed || true
+ufw allow "$WG_PORT/udp" || true   # WireGuard stealth port
 ufw route allow in on "$WG_IF" out on "$ETH_IF" || true
 ufw route allow in on "$ETH_IF" out on "$WG_IF" || true
 
@@ -86,12 +89,14 @@ PostUp   = iptables -A FORWARD -i %i -j ACCEPT; \
            iptables -A FORWARD -o %i -j ACCEPT; \
            iptables -t nat -A POSTROUTING -o $ETH_IF -j MASQUERADE; \
            ip6tables -A FORWARD -i %i -j ACCEPT; \
-           ip6tables -A FORWARD -o %i -j ACCEPT
+           ip6tables -A FORWARD -o %i -j ACCEPT; \
+           ip6tables -t nat -A POSTROUTING -o $ETH_IF -j MASQUERADE
 PostDown = iptables -D FORWARD -i %i -j ACCEPT; \
            iptables -D FORWARD -o %i -j ACCEPT; \
            iptables -t nat -D POSTROUTING -o $ETH_IF -j MASQUERADE; \
            ip6tables -D FORWARD -i %i -j ACCEPT; \
-           ip6tables -D FORWARD -o %i -j ACCEPT
+           ip6tables -D FORWARD -o %i -j ACCEPT; \
+           ip6tables -t nat -D POSTROUTING -o $ETH_IF -j MASQUERADE
 EOF
 
 chmod 600 "$WG_DIR/$WG_IF.conf"

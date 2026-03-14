@@ -148,7 +148,7 @@ adb install -r build/app/outputs/flutter-apk/app-release.apk
 Fix: Ensure app reaches `checkVpnPermission()` and call connect again.
 
 - Problem: Connects but no traffic.
-Fix: Validate AllowedIPs, DNS, endpoint port 51820, and server firewall.
+Fix: Validate AllowedIPs, DNS, endpoint port 443, and server firewall.
 
 - Problem: API calls fail on mobile only.
 Fix: Ensure cleartext HTTP is allowed or migrate API to HTTPS.

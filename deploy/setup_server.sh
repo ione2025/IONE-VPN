@@ -35,7 +35,7 @@ ufw default allow routed
 ufw allow ssh
 ufw allow 80/tcp    # HTTP (Let's Encrypt challenge)
 ufw allow 443/tcp   # HTTPS
-ufw allow 51820/udp # WireGuard
+ufw allow 443/udp   # WireGuard (stealth port – same as HTTPS, bypasses DPI firewalls)
 ufw allow 1194/udp  # OpenVPN
 
 # Persist routed-forward policy in UFW config so VPN traffic survives reboots.
