@@ -37,12 +37,26 @@ ufw route allow in on "$WG_IF" out on "$ETH_IF" || true
 ufw route allow in on "$ETH_IF" out on "$WG_IF" || true
 ufw --force reload || true
 
+# Ensure awg traffic is accepted inside UFW's own forward chain ordering.
+# This avoids packets hitting ufw-before-forward drops before generic FORWARD rules.
+if iptables -L ufw-before-forward -n >/dev/null 2>&1; then
+  while iptables -C ufw-before-forward -i "$WG_IF" -j ACCEPT 2>/dev/null; do
+    iptables -D ufw-before-forward -i "$WG_IF" -j ACCEPT
+  done
+  while iptables -C ufw-before-forward -o "$WG_IF" -j ACCEPT 2>/dev/null; do
+    iptables -D ufw-before-forward -o "$WG_IF" -j ACCEPT
+  done
+  iptables -I ufw-before-forward 1 -i "$WG_IF" -j ACCEPT
+  iptables -I ufw-before-forward 1 -o "$WG_IF" -j ACCEPT
+fi
+
 # 3) Ensure NAT and forward rules exist (idempotent).
 while iptables -C FORWARD -i "$WG_IF" -j ACCEPT 2>/dev/null; do iptables -D FORWARD -i "$WG_IF" -j ACCEPT; done
 while iptables -C FORWARD -o "$WG_IF" -j ACCEPT 2>/dev/null; do iptables -D FORWARD -o "$WG_IF" -j ACCEPT; done
 iptables -I FORWARD 1 -i "$WG_IF" -j ACCEPT
 iptables -I FORWARD 1 -o "$WG_IF" -j ACCEPT
-iptables -t nat -C POSTROUTING -s "$WG_SUBNET_CIDR" -o "$ETH_IF" -j MASQUERADE 2>/dev/null || iptables -t nat -A POSTROUTING -s "$WG_SUBNET_CIDR" -o "$ETH_IF" -j MASQUERADE
+while iptables -t nat -C POSTROUTING -s "$WG_SUBNET_CIDR" -o "$ETH_IF" -j MASQUERADE 2>/dev/null; do iptables -t nat -D POSTROUTING -s "$WG_SUBNET_CIDR" -o "$ETH_IF" -j MASQUERADE; done
+iptables -t nat -I POSTROUTING 1 -s "$WG_SUBNET_CIDR" -o "$ETH_IF" -j MASQUERADE
 # Clamp MSS on forwarded TCP to prevent PMTU black-hole stalls (slow downloads).
 while iptables -t mangle -C FORWARD -p tcp --tcp-flags SYN,RST SYN -j TCPMSS --clamp-mss-to-pmtu 2>/dev/null; do iptables -t mangle -D FORWARD -p tcp --tcp-flags SYN,RST SYN -j TCPMSS --clamp-mss-to-pmtu; done
 iptables -t mangle -I FORWARD 1 -p tcp --tcp-flags SYN,RST SYN -j TCPMSS --clamp-mss-to-pmtu
