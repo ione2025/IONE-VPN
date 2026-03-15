@@ -121,9 +121,13 @@ net.ipv4.tcp_keepalive_intvl = 10
 net.ipv4.tcp_keepalive_probes = 6
 # Connection-tracking table – prevents drops under high peer count
 net.netfilter.nf_conntrack_max = 1048576
-# Security
-net.ipv4.conf.all.rp_filter = 1
-net.ipv4.conf.default.rp_filter = 1
+# Security / routing
+# Loose rp_filter prevents asymmetric-route false positives that can kill
+# download throughput on VPN-forwarded traffic.
+net.ipv4.conf.all.rp_filter = 2
+net.ipv4.conf.default.rp_filter = 2
+net.ipv4.conf.eth0.rp_filter = 2
+net.ipv4.conf.awg0.rp_filter = 2
 net.ipv4.tcp_syncookies = 1
 SYSCTL
 modprobe tcp_bbr || true

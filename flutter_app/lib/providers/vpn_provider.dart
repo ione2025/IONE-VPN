@@ -868,7 +868,7 @@ while (\$true) {
       final idx = result.indexWhere(
         (l) => l.trim().toLowerCase().startsWith('[interface]'),
       );
-      if (idx >= 0) result.insert(idx + 1, 'DNS = 1.1.1.1, 8.8.8.8');
+      if (idx >= 0) result.insert(idx + 1, 'DNS = 1.1.1.1');
     }
 
     return result.join('\n');

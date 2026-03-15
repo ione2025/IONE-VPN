@@ -21,9 +21,15 @@ echo "[INFO] Using egress interface: $ETH_IF"
 # 1) Ensure kernel forwarding is enabled now and persisted.
 sysctl -w net.ipv4.ip_forward=1
 sysctl -w net.ipv6.conf.all.forwarding=1
+sysctl -w net.ipv4.conf.all.rp_filter=2
+sysctl -w net.ipv4.conf.default.rp_filter=2
+sysctl -w "net.ipv4.conf.${ETH_IF}.rp_filter=2" || true
+sysctl -w "net.ipv4.conf.${WG_IF}.rp_filter=2" || true
 cat >/etc/sysctl.d/99-ione-vpn.conf <<EOF
 net.ipv4.ip_forward = 1
 net.ipv6.conf.all.forwarding = 1
+net.ipv4.conf.all.rp_filter = 2
+net.ipv4.conf.default.rp_filter = 2
 EOF
 sysctl --system >/dev/null
 
@@ -53,13 +59,21 @@ fi
 # 3) Ensure NAT and forward rules exist (idempotent).
 while iptables -C FORWARD -i "$WG_IF" -j ACCEPT 2>/dev/null; do iptables -D FORWARD -i "$WG_IF" -j ACCEPT; done
 while iptables -C FORWARD -o "$WG_IF" -j ACCEPT 2>/dev/null; do iptables -D FORWARD -o "$WG_IF" -j ACCEPT; done
+while iptables -C FORWARD -i "$ETH_IF" -o "$WG_IF" -m conntrack --ctstate RELATED,ESTABLISHED -j ACCEPT 2>/dev/null; do iptables -D FORWARD -i "$ETH_IF" -o "$WG_IF" -m conntrack --ctstate RELATED,ESTABLISHED -j ACCEPT; done
+while iptables -C FORWARD -i "$WG_IF" -o "$ETH_IF" -m conntrack --ctstate NEW,RELATED,ESTABLISHED -j ACCEPT 2>/dev/null; do iptables -D FORWARD -i "$WG_IF" -o "$ETH_IF" -m conntrack --ctstate NEW,RELATED,ESTABLISHED -j ACCEPT; done
+iptables -I FORWARD 1 -i "$ETH_IF" -o "$WG_IF" -m conntrack --ctstate RELATED,ESTABLISHED -j ACCEPT
+iptables -I FORWARD 1 -i "$WG_IF" -o "$ETH_IF" -m conntrack --ctstate NEW,RELATED,ESTABLISHED -j ACCEPT
 iptables -I FORWARD 1 -i "$WG_IF" -j ACCEPT
 iptables -I FORWARD 1 -o "$WG_IF" -j ACCEPT
 while iptables -t nat -C POSTROUTING -s "$WG_SUBNET_CIDR" -o "$ETH_IF" -j MASQUERADE 2>/dev/null; do iptables -t nat -D POSTROUTING -s "$WG_SUBNET_CIDR" -o "$ETH_IF" -j MASQUERADE; done
 iptables -t nat -I POSTROUTING 1 -s "$WG_SUBNET_CIDR" -o "$ETH_IF" -j MASQUERADE
 # Clamp MSS on forwarded TCP to prevent PMTU black-hole stalls (slow downloads).
 while iptables -t mangle -C FORWARD -p tcp --tcp-flags SYN,RST SYN -j TCPMSS --clamp-mss-to-pmtu 2>/dev/null; do iptables -t mangle -D FORWARD -p tcp --tcp-flags SYN,RST SYN -j TCPMSS --clamp-mss-to-pmtu; done
-iptables -t mangle -I FORWARD 1 -p tcp --tcp-flags SYN,RST SYN -j TCPMSS --clamp-mss-to-pmtu
+# Fixed MSS 1200 for MTU 1280 profile (1280 - 80 bytes WG/UDP/IP overhead)
+while iptables -t mangle -C FORWARD -i "$WG_IF" -o "$ETH_IF" -p tcp --tcp-flags SYN,RST SYN -j TCPMSS --set-mss 1200 2>/dev/null; do iptables -t mangle -D FORWARD -i "$WG_IF" -o "$ETH_IF" -p tcp --tcp-flags SYN,RST SYN -j TCPMSS --set-mss 1200; done
+while iptables -t mangle -C FORWARD -i "$ETH_IF" -o "$WG_IF" -p tcp --tcp-flags SYN,RST SYN -j TCPMSS --set-mss 1200 2>/dev/null; do iptables -t mangle -D FORWARD -i "$ETH_IF" -o "$WG_IF" -p tcp --tcp-flags SYN,RST SYN -j TCPMSS --set-mss 1200; done
+iptables -t mangle -I FORWARD 1 -i "$WG_IF" -o "$ETH_IF" -p tcp --tcp-flags SYN,RST SYN -j TCPMSS --set-mss 1200
+iptables -t mangle -I FORWARD 1 -i "$ETH_IF" -o "$WG_IF" -p tcp --tcp-flags SYN,RST SYN -j TCPMSS --set-mss 1200
 # IPv6 NAT – required so client 10.8.0.x addresses are translated to the
 # server's public IPv6 address before packets leave the egress interface.
 ip6tables -t nat -C POSTROUTING -o "$ETH_IF" -j MASQUERADE 2>/dev/null || ip6tables -t nat -A POSTROUTING -o "$ETH_IF" -j MASQUERADE
