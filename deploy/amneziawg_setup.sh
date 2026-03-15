@@ -19,7 +19,9 @@ AWG_PORT="443"          # UDP 443 – disguised as QUIC/HTTPS, not filtered by G
 AWG_SUBNET="10.9.9.1/24"
 AWG_SUBNET_CIDR="10.9.9.0/24"
 AWG_DNS="1.1.1.1,8.8.8.8"
-MTU="1420"              # Optimal for most ISPs; use 1280 only on PPPoE/mobile with fragmentation
+MTU="1280"              # Matches all client MTUs (Android/iOS/Windows). Outer WG packet = 1340B,
+                        # safe on all 4G/LTE links. Higher values (1420) cause 1480B outer packets
+                        # that get fragmented on mobile paths, silently killing download speed.
 
 GREEN='\033[0;32m'; YELLOW='\033[1;33m'; NC='\033[0m'
 info()  { echo -e "${GREEN}[AWG]${NC}  $*"; }
@@ -152,16 +154,21 @@ H4   = 4
 # MSS clamping: clamps TCP SYN/SYN-ACK segments so they fit inside the WireGuard
 # MTU. Without this, large TCP packets are silently dropped and the connection
 # appears to work but runs at 1-5% of expected speed.
+# MSS = MTU(1280) - IP(20) - TCP(20) = 1240. Explicit --set-mss is safer than
+# --clamp-mss-to-pmtu because the kernel would use the server-side awg0 MTU (not
+# the client MTU) for the clamp, producing MSS=1380 and outer packets of 1480B.
 PostUp   = iptables -I FORWARD 1 -i %i -j ACCEPT; \
            iptables -I FORWARD 1 -o %i -j ACCEPT; \
            iptables -t nat -A POSTROUTING -s $AWG_SUBNET_CIDR -o $ETH_IF -j MASQUERADE; \
-           iptables -t mangle -I FORWARD 1 -p tcp --tcp-flags SYN,RST SYN -j TCPMSS --clamp-mss-to-pmtu; \
+           iptables -t mangle -I FORWARD 1 -i %i -o $ETH_IF -p tcp --tcp-flags SYN,RST SYN -j TCPMSS --set-mss 1240; \
+           iptables -t mangle -I FORWARD 1 -i $ETH_IF -o %i -p tcp --tcp-flags SYN,RST SYN -j TCPMSS --set-mss 1240; \
            ip link set dev %i txqueuelen 1000; \
            tc qdisc replace dev %i root fq
 PostDown = iptables -D FORWARD -i %i -j ACCEPT; \
            iptables -D FORWARD -o %i -j ACCEPT; \
            iptables -t nat -D POSTROUTING -s $AWG_SUBNET_CIDR -o $ETH_IF -j MASQUERADE; \
-           iptables -t mangle -D FORWARD -p tcp --tcp-flags SYN,RST SYN -j TCPMSS --clamp-mss-to-pmtu || true
+           iptables -t mangle -D FORWARD -i %i -o $ETH_IF -p tcp --tcp-flags SYN,RST SYN -j TCPMSS --set-mss 1240 || true; \
+           iptables -t mangle -D FORWARD -i $ETH_IF -o %i -p tcp --tcp-flags SYN,RST SYN -j TCPMSS --set-mss 1240 || true
 
 # Peers are appended here by the backend API (same format as WireGuard).
 EOF

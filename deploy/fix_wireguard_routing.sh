@@ -69,11 +69,17 @@ while iptables -t nat -C POSTROUTING -s "$WG_SUBNET_CIDR" -o "$ETH_IF" -j MASQUE
 iptables -t nat -I POSTROUTING 1 -s "$WG_SUBNET_CIDR" -o "$ETH_IF" -j MASQUERADE
 # Clamp MSS on forwarded TCP to prevent PMTU black-hole stalls (slow downloads).
 while iptables -t mangle -C FORWARD -p tcp --tcp-flags SYN,RST SYN -j TCPMSS --clamp-mss-to-pmtu 2>/dev/null; do iptables -t mangle -D FORWARD -p tcp --tcp-flags SYN,RST SYN -j TCPMSS --clamp-mss-to-pmtu; done
-# Fixed MSS 1200 for MTU 1280 profile (1280 - 80 bytes WG/UDP/IP overhead)
-while iptables -t mangle -C FORWARD -i "$WG_IF" -o "$ETH_IF" -p tcp --tcp-flags SYN,RST SYN -j TCPMSS --set-mss 1200 2>/dev/null; do iptables -t mangle -D FORWARD -i "$WG_IF" -o "$ETH_IF" -p tcp --tcp-flags SYN,RST SYN -j TCPMSS --set-mss 1200; done
-while iptables -t mangle -C FORWARD -i "$ETH_IF" -o "$WG_IF" -p tcp --tcp-flags SYN,RST SYN -j TCPMSS --set-mss 1200 2>/dev/null; do iptables -t mangle -D FORWARD -i "$ETH_IF" -o "$WG_IF" -p tcp --tcp-flags SYN,RST SYN -j TCPMSS --set-mss 1200; done
-iptables -t mangle -I FORWARD 1 -i "$WG_IF" -o "$ETH_IF" -p tcp --tcp-flags SYN,RST SYN -j TCPMSS --set-mss 1200
-iptables -t mangle -I FORWARD 1 -i "$ETH_IF" -o "$WG_IF" -p tcp --tcp-flags SYN,RST SYN -j TCPMSS --set-mss 1200
+# MSS = 1240 = client MTU(1280) - IP(20) - TCP(20).
+# Outer WG packet = 1280 + 60 = 1340B, safe on 4G/LTE (link MTU ≥ 1400).
+# Old value was 1200 (too conservative) and --clamp-mss-to-pmtu (uses server
+# awg0 MTU=1420 → MSS=1380 → outer=1480B → fragmented on some mobile paths).
+for OLD_MSS in 1200 1380 1460; do
+  while iptables -t mangle -C FORWARD -i "$WG_IF" -o "$ETH_IF" -p tcp --tcp-flags SYN,RST SYN -j TCPMSS --set-mss $OLD_MSS 2>/dev/null; do iptables -t mangle -D FORWARD -i "$WG_IF" -o "$ETH_IF" -p tcp --tcp-flags SYN,RST SYN -j TCPMSS --set-mss $OLD_MSS; done
+  while iptables -t mangle -C FORWARD -i "$ETH_IF" -o "$WG_IF" -p tcp --tcp-flags SYN,RST SYN -j TCPMSS --set-mss $OLD_MSS 2>/dev/null; do iptables -t mangle -D FORWARD -i "$ETH_IF" -o "$WG_IF" -p tcp --tcp-flags SYN,RST SYN -j TCPMSS --set-mss $OLD_MSS; done
+done
+while iptables -t mangle -C FORWARD -p tcp --tcp-flags SYN,RST SYN -j TCPMSS --clamp-mss-to-pmtu 2>/dev/null; do iptables -t mangle -D FORWARD -p tcp --tcp-flags SYN,RST SYN -j TCPMSS --clamp-mss-to-pmtu; done
+iptables -t mangle -I FORWARD 1 -i "$WG_IF" -o "$ETH_IF" -p tcp --tcp-flags SYN,RST SYN -j TCPMSS --set-mss 1240
+iptables -t mangle -I FORWARD 1 -i "$ETH_IF" -o "$WG_IF" -p tcp --tcp-flags SYN,RST SYN -j TCPMSS --set-mss 1240
 # IPv6 NAT – required so client 10.8.0.x addresses are translated to the
 # server's public IPv6 address before packets leave the egress interface.
 ip6tables -t nat -C POSTROUTING -o "$ETH_IF" -j MASQUERADE 2>/dev/null || ip6tables -t nat -A POSTROUTING -o "$ETH_IF" -j MASQUERADE
