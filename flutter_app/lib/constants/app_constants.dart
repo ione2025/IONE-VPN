@@ -6,20 +6,20 @@ class AppConstants {
   /// Base URL of the IONE VPN backend running on your DigitalOcean droplet.
   ///
   /// After deploying the backend (see SETUP.md):
-  ///   - Without TLS:  'http://178.128.107.176/api/v1'
-  ///   - With TLS:     'https://178.128.107.176/api/v1'
+  ///   - Without TLS:  'http://129.212.208.167/api/v1'
+  ///   - With TLS:     'https://129.212.208.167/api/v1'
   ///
   /// Change this before building the app.
-  static const String apiBaseUrl = 'http://178.128.107.176/api/v1';
+  static const String apiBaseUrl = 'http://129.212.208.167:3000/api/v1';
   static const List<String> apiBaseUrlFallbacks = [
-    'http://178.128.107.176/api',
-    'http://178.128.107.176',
-    'https://178.128.107.176/api/v1',
-    'https://178.128.107.176/api',
-    'https://178.128.107.176',
-    'http://178.128.107.176:3000/api/v1',
-    'http://178.128.107.176:3000/api',
-    'http://178.128.107.176:3000',
+    'http://129.212.208.167:3000/api',
+    'http://129.212.208.167:3000',
+    'http://129.212.208.167/api/v1',
+    'http://129.212.208.167/api',
+    'http://129.212.208.167',
+    'https://129.212.208.167/api/v1',
+    'https://129.212.208.167/api',
+    'https://129.212.208.167',
   ];
 
   static const Duration connectTimeout = Duration(seconds: 15);
@@ -33,7 +33,7 @@ class AppConstants {
   // ─── AmneziaWG ────────────────────────────────────────────────────────────
   /// UDP port 443 – disguised as QUIC/HTTPS, bypasses GFW and DPI firewalls.
   static const int wgPort = 443;
-  static const String wgServerEndpoint = '178.128.107.176:443';
+  static const String wgServerEndpoint = '129.212.208.167:443';
   /// Interface name used by the wireguard_flutter_plus plugin.
   static const String wgInterfaceName = 'ioneawg0';
   static const String wgDisplayName = 'IONE VPN';
@@ -72,10 +72,10 @@ H3 = 3
 H4 = 4
 
 [Peer]
-PublicKey = Om7Yz8ElALCIfzF6PwMMCjuiwL+MOCMo/8vPW5LuCG4=
+PublicKey = utWpkSYJk6pJyyWNeMy0o3KOVXGGVT1EdLplDK3bEw0=
 PresharedKey =
 AllowedIPs = 0.0.0.0/0
-Endpoint = 178.128.107.176:443
+Endpoint = 129.212.208.167:443
 PersistentKeepalive = 25
 ''';
 
@@ -96,7 +96,7 @@ PersistentKeepalive = 25
   // Bump this value whenever server-side WireGuard baseline changes (for
   // example after restoring a known-good droplet snapshot). The app will clear
   // cached tunnel config once so the next connect fetches a fresh profile.
-  static const String wgConfigRevisionValue = 'amneziawg-2026-03-15-v1';
+  static const String wgConfigRevisionValue = 'amneziawg-2026-03-15-v2';
   /// Set to 'true' while the user is connected; drives auto-reconnect on launch.
   static const String keyAutoConnect = 'ione_auto_connect';
   /// Kill switch preference ('true' | 'false').
