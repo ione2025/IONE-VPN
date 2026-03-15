@@ -33,7 +33,7 @@ const WG_CONFIG_DIR = process.env.AWG_CONFIG_DIR || process.env.WG_CONFIG_DIR ||
 const WG_INTERFACE = process.env.AWG_INTERFACE || process.env.WG_INTERFACE || 'awg0';
 const WG_SUBNET_BASE = process.env.AWG_SUBNET || process.env.WG_SUBNET || '10.9.9.0/24';
 const WG_DNS = process.env.AWG_DNS || process.env.WG_DNS || '1.1.1.1';
-const WG_MTU = process.env.AWG_MTU || process.env.WG_MTU || '1420';
+const WG_MTU = process.env.AWG_MTU || process.env.WG_MTU || '1280';
 const SERVER_PUBLIC_KEY = process.env.AWG_SERVER_PUBLIC_KEY || process.env.WG_SERVER_PUBLIC_KEY || '';
 const SERVER_ENDPOINT = process.env.AWG_SERVER_ENDPOINT || process.env.WG_SERVER_ENDPOINT || '';
 

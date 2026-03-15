@@ -785,7 +785,9 @@ while (\$true) {
   }
 
   /// Patches an AmneziaWG config to:
-  ///  1. Enforce MTU = 1420 (optimal for most ISPs; reduces crypto overhead vs 1280).
+  ///  1. Enforce platform MTU.
+  ///     - Android/iOS: 1280 (most reliable across mobile/CGNAT paths)
+  ///     - Others: 1420
   ///  2. Force IPv4-only full tunnel (AllowedIPs = 0.0.0.0/0).
   ///     IPv6 is disabled on the server to prevent GFW de-anonymisation.
   ///  3. Override the Endpoint if forcedEndpoint is provided.
@@ -798,6 +800,7 @@ while (\$true) {
     String config, {
     String? forcedEndpoint,
   }) async {
+    final forcedMtu = (!kIsWeb && (Platform.isAndroid || Platform.isIOS)) ? '1280' : '1420';
     // Android, iOS and Windows tunnel parsers reject AWG-only keys.
     final injectAwgParams = !kIsWeb && !(Platform.isWindows || Platform.isAndroid || Platform.isIOS);
 
@@ -825,7 +828,7 @@ while (\$true) {
         inInterface = false;
       }
 
-      // Remove existing MTU — we enforce 1420.
+      // Remove existing MTU — we enforce platform MTU.
       if (inInterface && trimmed.startsWith('mtu')) continue;
 
       // Always strip existing AWG param lines; re-inject below on non-Windows.
@@ -847,9 +850,9 @@ while (\$true) {
 
       result.add(line);
 
-      // Inject MTU = 1420 right after [Interface] header.
+      // Inject MTU right after [Interface] header.
       if (trimmed.startsWith('[interface]') && !mtuInserted) {
-        result.add('MTU = 1420');
+        result.add('MTU = $forcedMtu');
         mtuInserted = true;
       }
     }
