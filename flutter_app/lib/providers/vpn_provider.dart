@@ -786,7 +786,7 @@ while (\$true) {
 
   /// Patches an AmneziaWG config to:
   ///  1. Enforce platform MTU.
-  ///     - Android/iOS: 1280 (most reliable across mobile/CGNAT paths)
+  ///     - Android/iOS/Windows: 1280 (most reliable across CGNAT/fragile paths)
   ///     - Others: 1420
   ///  2. Force IPv4-only full tunnel (AllowedIPs = 0.0.0.0/0).
   ///     IPv6 is disabled on the server to prevent GFW de-anonymisation.
@@ -800,7 +800,9 @@ while (\$true) {
     String config, {
     String? forcedEndpoint,
   }) async {
-    final forcedMtu = (!kIsWeb && (Platform.isAndroid || Platform.isIOS)) ? '1280' : '1420';
+    final forcedMtu = (!kIsWeb && (Platform.isAndroid || Platform.isIOS || Platform.isWindows))
+      ? '1280'
+      : '1420';
     // Android, iOS and Windows tunnel parsers reject AWG-only keys.
     final injectAwgParams = !kIsWeb && !(Platform.isWindows || Platform.isAndroid || Platform.isIOS);
 
