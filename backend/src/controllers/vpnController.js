@@ -3,7 +3,6 @@
 const { validationResult } = require('express-validator');
 const Device = require('../models/Device');
 const wireguardService = require('../services/wireguardService');
-const openvpnService = require('../services/openvpnService');
 const logger = require('../config/logger');
 
 const TIER_DEVICE_LIMITS = {
@@ -65,8 +64,6 @@ exports.generateConfig = async (req, res, next) => {
         await wireguardService.addPeer(userId);
       config = configFile;
       deviceData = { ...deviceData, wgPublicKey: clientPublicKey, wgPresharedKey: presharedKey, assignedIp };
-    } else if (protocol === 'openvpn') {
-      config = await openvpnService.generateClientConfig(userId, name);
     } else {
       return res.status(400).json({ message: `Unsupported protocol: ${protocol}` });
     }

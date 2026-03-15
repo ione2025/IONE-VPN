@@ -25,10 +25,6 @@ jest.mock('../config/redis', () => {
   return fn;
 });
 
-jest.mock('../services/openvpnService', () => ({
-  generateClientConfig: jest.fn().mockResolvedValue('client\ndev tun'),
-}));
-
 const mongoose = require('mongoose');
 const request = require('supertest');
 const app = require('../app');

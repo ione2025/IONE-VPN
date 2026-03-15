@@ -130,7 +130,6 @@ class _ProtocolTileState extends State<_ProtocolTile> {
         items: const [
           DropdownMenuItem(value: 'Auto (WireGuard)', child: Text('Auto')),
           DropdownMenuItem(value: 'wireguard', child: Text('WireGuard')),
-          DropdownMenuItem(value: 'openvpn', child: Text('OpenVPN')),
         ],
         onChanged: (v) => setState(() => _protocol = v!),
       ),

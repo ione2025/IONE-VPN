@@ -13,7 +13,7 @@ router.post(
   [
     body('name').trim().notEmpty().isLength({ max: 64 }),
     body('platform').isIn(['ios', 'android', 'windows', 'macos', 'linux', 'browser']),
-    body('protocol').optional().isIn(['wireguard', 'openvpn', 'ikev2']),
+    body('protocol').optional().isIn(['wireguard']),
   ],
   vpnController.generateConfig,
 );

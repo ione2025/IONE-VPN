@@ -36,7 +36,6 @@ ufw allow ssh
 ufw allow 80/tcp    # HTTP (Let's Encrypt challenge)
 ufw allow 443/tcp   # HTTPS
 ufw allow 443/udp   # WireGuard (stealth port – same as HTTPS, bypasses DPI firewalls)
-ufw allow 1194/udp  # OpenVPN
 
 # Persist routed-forward policy in UFW config so VPN traffic survives reboots.
 sed -i 's/^DEFAULT_FORWARD_POLICY=.*/DEFAULT_FORWARD_POLICY="ACCEPT"/' /etc/default/ufw || true
@@ -140,16 +139,12 @@ sysctl --system >/dev/null
 modprobe tcp_bbr || true
 echo "tcp_bbr" >> /etc/modules-load.d/ione-vpn.conf 2>/dev/null || true
 
-# ─── 9. OpenVPN ───────────────────────────────────────────────────────────────
-info "Installing OpenVPN..."
-apt-get install -y openvpn easy-rsa
-
-# ─── 10. PM2 (Node.js process manager) ───────────────────────────────────────
+# ─── 9. PM2 (Node.js process manager) ───────────────────────────────────────
 info "Installing PM2..."
 npm install -g pm2
 pm2 startup systemd -u "$DROPLET_USER" --hp "/home/$DROPLET_USER"
 
-# ─── 11. Clone / update repo ─────────────────────────────────────────────────
+# ─── 10. Clone / update repo ─────────────────────────────────────────────────
 info "Setting up application directory..."
 mkdir -p "$APP_DIR"
 chown "$DROPLET_USER:$DROPLET_USER" "$APP_DIR"
