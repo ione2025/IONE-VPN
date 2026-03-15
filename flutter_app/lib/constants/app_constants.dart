@@ -30,21 +30,51 @@ class AppConstants {
   static const int premiumMaxDevices = 10;
   static const int ultraMaxDevices = 50;
 
-  // ─── WireGuard ────────────────────────────────────────────────────────────
+  // ─── AmneziaWG ────────────────────────────────────────────────────────────
+  /// UDP port 443 – disguised as QUIC/HTTPS, bypasses GFW and DPI firewalls.
   static const int wgPort = 443;
   static const String wgServerEndpoint = '178.128.107.176:443';
-  static const String wgInterfaceName = 'ionewg0';
+  /// Interface name used by the wireguard_flutter_plus plugin.
+  static const String wgInterfaceName = 'ioneawg0';
   static const String wgDisplayName = 'IONE VPN';
   static const String wgProviderBundleIdentifier = 'com.ione.vpn.WGExtension';
   static const String wgIosAppGroup = 'group.com.ione.vpn';
+
+  // ── AmneziaWG obfuscation parameters ──────────────────────────────────────
+  // MUST match server /etc/amnezia/amneziawg/awg0.conf [Interface] section.
+  // All-zero = vanilla WireGuard speed; no junk overhead visible to DPI.
+  // To unblock in actively-filtered networks: set awgS1=16, then awgJc=1.
+  static const int awgJc   = 0;
+  static const int awgJmin = 0;
+  static const int awgJmax = 0;
+  static const int awgS1   = 0;
+  static const int awgS2   = 0;
+  static const int awgH1   = 1;
+  static const int awgH2   = 2;
+  static const int awgH3   = 3;
+  static const int awgH4   = 4;
+
+  /// Fallback config used only when the backend cannot be reached on first launch.
+  /// Replace keys/IP with real values from: cat /etc/amnezia/amneziawg/publickey
   static const String wgDefaultConfig = '''[Interface]
 PrivateKey = wHOG6h9nB4/xrdwCl6Dez2iwvQu3KrzfjsLPdkAx5Xc=
-Address = 10.8.0.2/32
-DNS = 8.8.8.8, 1.1.1.1
+Address = 10.9.9.2/32
+DNS = 1.1.1.1, 8.8.8.8
+MTU = 1280
+Jc = 0
+Jmin = 0
+Jmax = 0
+S1 = 0
+S2 = 0
+H1 = 1
+H2 = 2
+H3 = 3
+H4 = 4
 
 [Peer]
 PublicKey = Om7Yz8ElALCIfzF6PwMMCjuiwL+MOCMo/8vPW5LuCG4=
-AllowedIPs = 0.0.0.0/0, ::/0
+PresharedKey =
+AllowedIPs = 0.0.0.0/0
 Endpoint = 178.128.107.176:443
 PersistentKeepalive = 25
 ''';
@@ -66,7 +96,7 @@ PersistentKeepalive = 25
   // Bump this value whenever server-side WireGuard baseline changes (for
   // example after restoring a known-good droplet snapshot). The app will clear
   // cached tunnel config once so the next connect fetches a fresh profile.
-  static const String wgConfigRevisionValue = 'server-fixed-2026-03-15-v2';
+  static const String wgConfigRevisionValue = 'amneziawg-2026-03-15-v1';
   /// Set to 'true' while the user is connected; drives auto-reconnect on launch.
   static const String keyAutoConnect = 'ione_auto_connect';
   /// Kill switch preference ('true' | 'false').

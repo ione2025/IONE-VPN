@@ -1,6 +1,6 @@
 import 'dart:async';
 import 'dart:convert' show LineSplitter, utf8;
-import 'dart:io' show InternetAddressType, NetworkInterface, Platform, Process, ProcessSignal;
+import 'dart:io' show Platform, Process, ProcessSignal;
 import 'package:dio/dio.dart';
 import 'package:flutter/foundation.dart';
 import 'package:flutter_secure_storage/flutter_secure_storage.dart';
@@ -784,69 +784,55 @@ while (\$true) {
     );
   }
 
-  /// Patches a wg-quick config to:
-  ///  1. Detect the host network interface MTU and insert a safe WireGuard MTU
-  ///     (host MTU − 80 bytes for WireGuard/UDP/IP overhead, min 1280).
-  ///     Removes any MTU already in the config to avoid conflicts.
-  ///  2. Force IPv4-only full tunnel to avoid IPv6 route blackholes on
-  ///     servers that are not configured for IPv6 forwarding/NAT.
+  /// Patches an AmneziaWG config to:
+  ///  1. Enforce MTU = 1280 (safe for all ISPs, mobile carriers, and PPPoE).
+  ///  2. Force IPv4-only full tunnel (AllowedIPs = 0.0.0.0/0).
+  ///     IPv6 is disabled on the server to prevent GFW de-anonymisation.
+  ///  3. Override the Endpoint if forcedEndpoint is provided.
+  ///  4. Inject AWG obfuscation parameters from AppConstants if missing.
+  ///  5. Ensure DNS is present.
   Future<String> _patchConfig(
     String config, {
     String? forcedEndpoint,
   }) async {
-    // ── Determine optimal MTU ──────────────────────────────────────────────
-    // 1380 = standard Ethernet 1500 − 80 bytes WireGuard/UDP/IP overhead
-    // − 40 bytes safety margin for PPPoE/carrier encapsulation.
-    // This is the same value used by Mullvad and ProtonVPN for mobile clients.
-    // The server sends MTU=1420 but we use 1380 client-side so that devices
-    // on DSL/PPPoE (which reduce Ethernet MTU by 8 bytes) never fragment.
-    int mtu = 1380;
-    try {
-      if (!kIsWeb) {
-        final interfaces = await NetworkInterface.list(
-          includeLinkLocal: false,
-          type: InternetAddressType.any,
-        );
-        for (final iface in interfaces) {
-          if (iface.name.toLowerCase().contains('lo')) continue;
-          // Conservative but effective for all ISP encapsulations.
-          mtu = 1380;
-          break;
-        }
-      }
-    } catch (_) {
-      // Any failure → keep the safe default (1380).
-    }
-
     // ── Patch the config lines ─────────────────────────────────────────────
     final lines = config.split('\n');
     final result = <String>[];
     bool mtuInserted = false;
+    bool awgParamsInserted = false;
     bool inInterface = false;
     bool hasDns = false;
+
+    // AWG param keys that must appear in [Interface]
+    const awgKeys = {'jc', 'jmin', 'jmax', 's1', 's2', 'h1', 'h2', 'h3', 'h4'};
 
     for (var line in lines) {
       final trimmed = line.trim().toLowerCase();
 
-      // Track section
       if (trimmed.startsWith('[interface]')) inInterface = true;
-      if (trimmed.startsWith('[peer]')) inInterface = false;
+      if (trimmed.startsWith('[peer]')) {
+        // Before closing [Interface], inject AWG params if not already present.
+        if (!awgParamsInserted) {
+          result.addAll(_awgParamLines());
+          awgParamsInserted = true;
+        }
+        inInterface = false;
+      }
 
-      // Remove any existing MTU line — we will inject the detected value.
+      // Remove existing MTU — we enforce 1280.
       if (inInterface && trimmed.startsWith('mtu')) continue;
 
-      // Full-tunnel: route all IPv4 and IPv6 through the VPN.
-      // ::/0 prevents IPv6 leak-outs that expose the real IP address.
-      // The server is configured with ip6tables MASQUERADE so IPv6 traffic
-      // is correctly NATted through the server's public IPv6 address.
+      // Remove existing AWG param lines — we will re-inject them canonically.
+      if (inInterface && awgKeys.any((k) => trimmed.startsWith('$k '))) continue;
+
+      // IPv4-only full tunnel: GFW can use IPv6 to de-anonymise VPN users.
+      // Server has IPv6 disabled; ::/0 would cause a route blackhole.
       if (!inInterface && trimmed.startsWith('allowedips')) {
-        result.add('AllowedIPs = 0.0.0.0/0, ::/0');
+        result.add('AllowedIPs = 0.0.0.0/0');
         continue;
       }
 
-      if (inInterface && trimmed.startsWith('dns')) {
-        hasDns = true;
-      }
+      if (inInterface && trimmed.startsWith('dns')) hasDns = true;
 
       if (!inInterface && trimmed.startsWith('endpoint') && forcedEndpoint != null) {
         result.add('Endpoint = $forcedEndpoint');
@@ -855,24 +841,41 @@ while (\$true) {
 
       result.add(line);
 
-      // Inject MTU right after the [Interface] header.
+      // Inject MTU = 1280 right after [Interface] header.
       if (trimmed.startsWith('[interface]') && !mtuInserted) {
-        result.add('MTU = $mtu');
+        result.add('MTU = 1280');
         mtuInserted = true;
       }
     }
 
+    // Edge case: config has no [Peer] section yet — inject AWG params at end.
+    if (!awgParamsInserted) {
+      result.addAll(_awgParamLines());
+    }
+
     if (!hasDns) {
-      final interfaceIndex = result.indexWhere(
-        (line) => line.trim().toLowerCase().startsWith('[interface]'),
+      final idx = result.indexWhere(
+        (l) => l.trim().toLowerCase().startsWith('[interface]'),
       );
-      if (interfaceIndex >= 0) {
-        result.insert(interfaceIndex + 1, 'DNS = 1.1.1.1, 8.8.8.8');
-      }
+      if (idx >= 0) result.insert(idx + 1, 'DNS = 1.1.1.1, 8.8.8.8');
     }
 
     return result.join('\n');
   }
+
+  /// Returns the canonical AmneziaWG obfuscation parameter lines.
+  /// Values come from AppConstants which mirror the server's awg0.conf.
+  List<String> _awgParamLines() => [
+    'Jc = ${AppConstants.awgJc}',
+    'Jmin = ${AppConstants.awgJmin}',
+    'Jmax = ${AppConstants.awgJmax}',
+    'S1 = ${AppConstants.awgS1}',
+    'S2 = ${AppConstants.awgS2}',
+    'H1 = ${AppConstants.awgH1}',
+    'H2 = ${AppConstants.awgH2}',
+    'H3 = ${AppConstants.awgH3}',
+    'H4 = ${AppConstants.awgH4}',
+  ];
 
   Future<bool> _isCachedConfigStale() async {
     final raw = await _storage.read(key: AppConstants.keyWgConfigUpdatedAt);

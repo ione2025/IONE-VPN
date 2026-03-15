@@ -1,15 +1,19 @@
 'use strict';
 
 /**
- * WireGuard service – manages peers on the server's wg0 interface.
+ * AmneziaWG service – manages peers on the server's awg0 interface.
  *
- * Key generation uses Node.js built-in crypto (Curve25519 / x25519) so that:
- *   • No `wg` binary is required for generating keys – works in CI/test without mocking.
- *   • Real WireGuard-compatible keys (32-byte Curve25519) are produced in all environments.
+ * AmneziaWG is a fork of WireGuard that adds per-packet junk-injection
+ * obfuscation (Jc, Jmin, Jmax, S1-S4, H1-H4) to defeat Deep Packet
+ * Inspection in China, Iran, and Russia. With all J/S parameters at zero
+ * it is wire-compatible with vanilla WireGuard – zero overhead.
  *
- * Runtime peer-management commands (syncconf, set, show) still call the `wg`
- * CLI when it is present on the DigitalOcean droplet, but degrade gracefully
- * with a warning log when it is absent (dev / CI).
+ * Key generation uses Node.js built-in crypto (Curve25519 / x25519):
+ *   • No binary required – works in CI/test without mocking.
+ *   • 32-byte Curve25519 keys compatible with both awg and wg.
+ *
+ * Runtime peer commands call `awg` / `awg-quick`, falling back to `wg` / `wg-quick`
+ * when the AmneziaWG binary is absent (dev / CI).
  *
  * Zero-log policy: peer public keys are stored to re-build the config;
  * no connection timestamps, source IPs or traffic volumes are persisted.
@@ -24,15 +28,31 @@ const path = require('path');
 const execFileAsync = promisify(execFile);
 const logger = require('../config/logger');
 
-const WG_CONFIG_DIR = process.env.WG_CONFIG_DIR || '/etc/wireguard';
-const WG_INTERFACE = process.env.WG_INTERFACE || 'wg0';
-const WG_SUBNET_BASE = process.env.WG_SUBNET || '10.8.0.0/24';
-const WG_DNS = process.env.WG_DNS || '1.1.1.1';
-const SERVER_PUBLIC_KEY = process.env.WG_SERVER_PUBLIC_KEY || '';
-const SERVER_ENDPOINT = process.env.WG_SERVER_ENDPOINT || '';
+// AmneziaWG uses its own config directory and interface name.
+const WG_CONFIG_DIR = process.env.AWG_CONFIG_DIR || process.env.WG_CONFIG_DIR || '/etc/amnezia/amneziawg';
+const WG_INTERFACE = process.env.AWG_INTERFACE || process.env.WG_INTERFACE || 'awg0';
+const WG_SUBNET_BASE = process.env.AWG_SUBNET || process.env.WG_SUBNET || '10.9.9.0/24';
+const WG_DNS = process.env.AWG_DNS || process.env.WG_DNS || '1.1.1.1';
+const SERVER_PUBLIC_KEY = process.env.AWG_SERVER_PUBLIC_KEY || process.env.WG_SERVER_PUBLIC_KEY || '';
+const SERVER_ENDPOINT = process.env.AWG_SERVER_ENDPOINT || process.env.WG_SERVER_ENDPOINT || '';
+
+// AmneziaWG obfuscation parameters (must match server awg0.conf exactly).
+// All-zero = vanilla WireGuard performance with no DPI fingerprint.
+// To unblock in actively-filtered networks: set S4=16 first, then Jc=1.
+const AWG_PARAMS = {
+  Jc:   parseInt(process.env.AWG_JC   ?? '0', 10),
+  Jmin: parseInt(process.env.AWG_JMIN ?? '0', 10),
+  Jmax: parseInt(process.env.AWG_JMAX ?? '0', 10),
+  S1:   parseInt(process.env.AWG_S1   ?? '0', 10),
+  S2:   parseInt(process.env.AWG_S2   ?? '0', 10),
+  H1:   parseInt(process.env.AWG_H1   ?? '1', 10),
+  H2:   parseInt(process.env.AWG_H2   ?? '2', 10),
+  H3:   parseInt(process.env.AWG_H3   ?? '3', 10),
+  H4:   parseInt(process.env.AWG_H4   ?? '4', 10),
+};
 
 // Track assigned IPs in memory (rebuilt from DB on startup via rebuildUsedIps)
-const usedIps = new Set(['10.8.0.1']); // server itself
+const usedIps = new Set(['10.9.9.1']); // server itself
 
 // ─── Key generation (pure Node.js – no `wg` binary required) ────────────────
 
@@ -101,7 +121,7 @@ exports.rebuildUsedIps = async () => {
         usedIps.add(d.assignedIp.split('/')[0]);
       }
     }
-    logger.info(`WireGuard IP pool rebuilt: ${usedIps.size} IPs in use`);
+    logger.info(`AmneziaWG IP pool rebuilt: ${usedIps.size} IPs in use`);
   } catch (err) {
     logger.warn(`Could not rebuild WireGuard IP pool: ${err.message}`);
   }
@@ -110,51 +130,74 @@ exports.rebuildUsedIps = async () => {
 // ─── Helpers ─────────────────────────────────────────────────────────────────
 
 /**
- * Run a `wg` sub-command and return stdout.
- * Resolves to an empty string when the `wg` binary is not present (dev/CI).
+ * Run an `awg` (or `wg` fallback) sub-command and return stdout.
+ * AmneziaWG ships the `awg` binary which is a drop-in superset of `wg`.
+ * Resolves to an empty string when neither binary is present (dev/CI).
  */
-async function wg(...args) {
-  try {
-    const { stdout } = await execFileAsync('wg', args);
-    return stdout.trim();
-  } catch (err) {
-    if (err.code === 'ENOENT') {
-      logger.warn(`wg binary not found – skipping: wg ${args.join(' ')}`);
-      return '';
+async function awgExec(...args) {
+  for (const bin of ['awg', 'wg']) {
+    try {
+      const { stdout } = await execFileAsync(bin, args);
+      return stdout.trim();
+    } catch (err) {
+      if (err.code === 'ENOENT') continue; // try next binary
+      throw err;
     }
-    throw err;
   }
+  logger.warn(`Neither awg nor wg binary found – skipping: ${args.join(' ')}`);
+  return '';
 }
+// Keep `wg` alias so any internal callers still work.
+const wg = awgExec;
 
 /**
- * Reload wg0 configuration from disk without dropping connections.
+ * Reload awg0 configuration from disk without dropping connections.
  *
- * Important: `wg syncconf` accepts only pure WireGuard keys. Our server file
- * is a `wg-quick` config (contains Address/DNS/PostUp/PostDown), so we must
- * strip it first via `wg-quick strip` and then sync the stripped file.
+ * `awg syncconf` / `wg syncconf` accept only stripped WireGuard keys.
+ * We must strip the wg-quick directives (Address/MTU/PostUp/PostDown/AWG params)
+ * first via `awg-quick strip` (or `wg-quick strip` as fallback).
  */
 async function syncConfig() {
   const configPath = `${WG_CONFIG_DIR}/${WG_INTERFACE}.conf`;
   const tmpPath = path.join('/tmp', `${WG_INTERFACE}.sync.${process.pid}.${Date.now()}.conf`);
 
   try {
-    const { stdout } = await execFileAsync('wg-quick', ['strip', configPath]);
-    await fs.writeFile(tmpPath, stdout, { mode: 0o600 });
-    await execFileAsync('wg', ['syncconf', WG_INTERFACE, tmpPath]);
-  } catch (err) {
-    if (err.code === 'ENOENT') {
-      logger.warn('wg/wg-quick binary not found - skipping syncconf (dev/CI)');
+    // Try awg-quick first (AmneziaWG), fall back to wg-quick (vanilla WireGuard).
+    let stripped;
+    for (const bin of ['awg-quick', 'wg-quick']) {
+      try {
+        const { stdout } = await execFileAsync(bin, ['strip', configPath]);
+        stripped = stdout;
+        break;
+      } catch (e) {
+        if (e.code !== 'ENOENT') throw e;
+      }
+    }
+    if (stripped === undefined) {
+      logger.warn('awg-quick / wg-quick not found – skipping syncconf (dev/CI)');
       return;
     }
+    await fs.writeFile(tmpPath, stripped, { mode: 0o600 });
+    // awg syncconf is a superset of wg syncconf; fall back to wg.
+    for (const bin of ['awg', 'wg']) {
+      try {
+        await execFileAsync(bin, ['syncconf', WG_INTERFACE, tmpPath]);
+        return;
+      } catch (e) {
+        if (e.code !== 'ENOENT') throw e;
+      }
+    }
+    logger.warn('awg / wg syncconf binary not found – skipping (dev/CI)');
+  } catch (err) {
     const details = err.stderr ? `${err.message}\n${err.stderr}` : err.message;
-    throw new Error(`Could not sync WireGuard config: ${details}`);
+    throw new Error(`Could not sync AmneziaWG config: ${details}`);
   } finally {
     await fs.unlink(tmpPath).catch(() => {});
   }
 }
 
 /**
- * Remove a peer block by public key from the persistent wg0.conf file.
+ * Remove a peer block by public key from the persistent awg0.conf file.
  * This keeps disk config in sync with runtime state so old peers do not
  * come back on restart/sync.
  */
@@ -267,10 +310,10 @@ exports.addPeer = async (userId) => {
   const serverEndpoint = await getServerEndpoint();
 
   if (!serverPublicKey) {
-    throw new Error('WireGuard server public key is missing. Set WG_SERVER_PUBLIC_KEY or /etc/wireguard/publickey.');
+    throw new Error('AmneziaWG server public key is missing. Set AWG_SERVER_PUBLIC_KEY in .env or ensure /etc/amnezia/amneziawg/publickey exists.');
   }
   if (!serverEndpoint) {
-    throw new Error('WireGuard server endpoint is missing. Set WG_SERVER_ENDPOINT or SERVER_IP.');
+    throw new Error('AmneziaWG server endpoint is missing. Set AWG_SERVER_ENDPOINT or SERVER_IP in .env.');
   }
 
   const { privateKey: clientPrivateKey, publicKey: clientPublicKey } = await generateWgKeyPair();
@@ -293,53 +336,67 @@ exports.addPeer = async (userId) => {
   });
 
   // Prefer syncconf so runtime and disk config stay identical.
-  // If syncconf fails (e.g. malformed wg0.conf), fall back to adding the peer
-  // directly in the live interface so /vpn/config still succeeds.
+  // If syncconf fails, fall back to adding the peer directly in the live
+  // interface via `awg set` (or `wg set`) so /vpn/config still succeeds.
   let applied = false;
   try {
     await syncConfig();
     applied = true;
   } catch (err) {
-    logger.warn(`syncconf failed while adding peer; trying runtime wg set fallback: ${err.message}`);
-    try {
-      await execFileAsync('wg', [
-        'set',
-        WG_INTERFACE,
-        'peer',
-        clientPublicKey,
-        'allowed-ips',
-        assignedIp,
-      ]);
-      applied = true;
-    } catch (fallbackErr) {
-      logger.error(`Runtime wg set fallback also failed: ${fallbackErr.message}`);
+    logger.warn(`syncconf failed while adding peer; trying runtime awg set fallback: ${err.message}`);
+    for (const bin of ['awg', 'wg']) {
+      try {
+        await execFileAsync(bin, [
+          'set', WG_INTERFACE,
+          'peer', clientPublicKey,
+          'allowed-ips', assignedIp,
+        ]);
+        applied = true;
+        break;
+      } catch (e) {
+        if (e.code !== 'ENOENT') {
+          logger.error(`Runtime ${bin} set fallback failed: ${e.message}`);
+        }
+      }
     }
   }
 
   if (!applied) {
-    throw new Error('Could not apply new WireGuard peer (syncconf and runtime fallback both failed).');
+    throw new Error('Could not apply new AmneziaWG peer (syncconf and runtime fallback both failed).');
   }
 
-  // Build the client config file
+  // Build the AmneziaWG client config.
+  // AWG obfuscation params (Jc, S1, S2, H1-H4) MUST match the server's
+  // awg0.conf exactly or the handshake will be silently rejected.
   const configFile = [
     '[Interface]',
     `PrivateKey = ${clientPrivateKey}`,
     `Address = ${assignedIp}`,
-    // Support comma-separated DNS list from env (e.g. "1.1.1.1, 1.0.0.1")
     `DNS = ${WG_DNS}`,
-    // 1420 = standard Ethernet MTU (1500) minus WireGuard overhead (80 bytes).
-    // Prevents fragmentation and packet loss on most ISPs.
-    'MTU = 1420',
+    // MTU 1280: safe minimum for all ISPs, mobile carriers, and PPPoE.
+    'MTU = 1280',
+    // ─ AmneziaWG obfuscation parameters ───────────────────────────────────
+    // All zero = vanilla WireGuard speed; no junk overhead.
+    // Must be identical to server /etc/amnezia/amneziawg/awg0.conf.
+    `Jc = ${AWG_PARAMS.Jc}`,
+    `Jmin = ${AWG_PARAMS.Jmin}`,
+    `Jmax = ${AWG_PARAMS.Jmax}`,
+    `S1 = ${AWG_PARAMS.S1}`,
+    `S2 = ${AWG_PARAMS.S2}`,
+    `H1 = ${AWG_PARAMS.H1}`,
+    `H2 = ${AWG_PARAMS.H2}`,
+    `H3 = ${AWG_PARAMS.H3}`,
+    `H4 = ${AWG_PARAMS.H4}`,
     '',
     '[Peer]',
     `PublicKey = ${serverPublicKey}`,
-    // PSK adds a post-quantum symmetric layer (RFC 8918 / WireGuard spec).
-    // Same peer PSK that is set on the server side in the peer block.
+    // PSK: post-quantum symmetric layer on top of Curve25519 ECDH (RFC 8918).
     `PresharedKey = ${presharedKey}`,
     `Endpoint = ${serverEndpoint}`,
-    // Route ALL traffic (IPv4 + IPv6) through the VPN.
-    // ::/0 prevents IPv6 leak-outs that expose the real IP.
-    'AllowedIPs = 0.0.0.0/0, ::/0',
+    // IPv4-only full tunnel (GFW recommendation: disable IPv6 on server
+    // to prevent the Great Firewall from using IPv6 to de-anonymise users).
+    'AllowedIPs = 0.0.0.0/0',
+    // Keepalive every 25 s maintains NAT mappings for weeks without disconnect.
     'PersistentKeepalive = 25',
   ].join('\n');
 
@@ -359,29 +416,36 @@ exports.addPeer = async (userId) => {
  * @param {string} [assignedIp] - the IP to release back to the pool (e.g. "10.8.0.2/32")
  */
 exports.removePeer = async (publicKey, assignedIp) => {
-  await execFileAsync('wg', ['set', WG_INTERFACE, 'peer', publicKey, 'remove']).catch((err) => {
-    logger.warn(`Could not remove WireGuard peer (non-fatal in dev/CI): ${err.message}`);
-  });
+  // Try awg first, fall back to wg
+  for (const bin of ['awg', 'wg']) {
+    try {
+      await execFileAsync(bin, ['set', WG_INTERFACE, 'peer', publicKey, 'remove']);
+      break;
+    } catch (err) {
+      if (err.code === 'ENOENT') continue;
+      logger.warn(`Could not remove AmneziaWG peer (non-fatal in dev/CI): ${err.message}`);
+      break;
+    }
+  }
   await removePeerFromConfig(publicKey).catch((err) => {
-    logger.warn(`Could not remove peer from WireGuard config file: ${err.message}`);
+    logger.warn(`Could not remove peer from AWG config file: ${err.message}`);
   });
   await syncConfig().catch((err) => {
-    logger.warn(`Could not sync WireGuard config after peer removal: ${err.message}`);
+    logger.warn(`Could not sync AWG config after peer removal: ${err.message}`);
   });
   if (assignedIp) {
-    // Strip the CIDR suffix to release the bare IP back to the pool
     usedIps.delete(assignedIp.split('/')[0]);
   }
-  logger.info(`WireGuard peer removed: ${publicKey}`);
+  logger.info(`AmneziaWG peer removed: ${publicKey}`);
 };
 
 /**
- * Return live peer stats from `wg show`.
- * Returns an empty array when the `wg` binary is not available (dev/CI).
+ * Return live peer stats from `awg show` (falls back to `wg show`).
+ * Returns an empty array when neither binary is available (dev/CI).
  * No data is persisted – purely real-time.
  */
 exports.getPeerStats = async () => {
-  const output = await wg('show', WG_INTERFACE, 'dump');
+  const output = await awgExec('show', WG_INTERFACE, 'dump');
   if (!output) return [];
   const lines = output.split('\n').slice(1); // skip server line
   return lines

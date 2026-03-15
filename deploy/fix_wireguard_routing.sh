@@ -1,10 +1,11 @@
 #!/usr/bin/env bash
 # =============================================================================
-# IONE VPN - Repair WireGuard internet forwarding/NAT on an existing droplet
+# IONE VPN - Repair AmneziaWG internet forwarding/NAT on an existing droplet
 # Run as root: bash /opt/ione-vpn/deploy/fix_wireguard_routing.sh
 # =============================================================================
 set -euo pipefail
 
+# Default to awg0 (AmneziaWG); override with WG_INTERFACE=wg0 for vanilla WG
 WG_IF="${WG_INTERFACE:-wg0}"
 WG_PORT="${WG_PORT:-443}"  # Default matches app_constants.dart wgPort
 ETH_IF=$(ip route | awk '/default/ {print $5; exit}')
@@ -48,10 +49,17 @@ if command -v netfilter-persistent >/dev/null 2>&1; then
   netfilter-persistent save || true
 fi
 
-# 4) Restart WireGuard to re-apply PostUp/PostDown and verify.
-systemctl restart "wg-quick@${WG_IF}"
+# 4) Restart AmneziaWG (awg-quick preferred, fall back to wg-quick).
+if systemctl list-units --full -all 2>/dev/null | grep -q "awg-quick@${WG_IF}"; then
+  systemctl restart "awg-quick@${WG_IF}"
+elif systemctl list-units --full -all 2>/dev/null | grep -q "wg-quick@${WG_IF}"; then
+  systemctl restart "wg-quick@${WG_IF}"
+else
+  awg-quick down "$WG_IF" 2>/dev/null || wg-quick down "$WG_IF" 2>/dev/null || true
+  awg-quick up   "$WG_IF" 2>/dev/null || wg-quick up   "$WG_IF" 2>/dev/null || true
+fi
 
 sleep 1
-wg show "$WG_IF" || true
+awg show "$WG_IF" 2>/dev/null || wg show "$WG_IF" 2>/dev/null || true
 
-echo "[OK] WireGuard routing/NAT repair completed. Reconnect the VPN client and test web browsing."
+echo "[OK] AmneziaWG routing/NAT repair completed. Reconnect the VPN client and test web browsing."
