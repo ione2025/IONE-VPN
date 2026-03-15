@@ -166,9 +166,33 @@ async function start() {
   // is correct after server restarts (usedIps is otherwise in-memory only).
   const wireguardService = require('./services/wireguardService');
   await wireguardService.rebuildUsedIps();
-  app.listen(PORT, () => {
+  const server = app.listen(PORT, () => {
     logger.info(`IONE VPN API running on port ${PORT} [${process.env.NODE_ENV}]`);
   });
+
+  // ── Graceful shutdown (PM2 cluster reload / SIGINT / SIGTERM) ────────────
+  // Stops accepting new connections, waits for in-flight requests to finish,
+  // then exits. This enables zero-downtime rolling reloads in cluster mode.
+  const shutdown = (signal) => {
+    logger.info(`${signal} received – shutting down gracefully`);
+    server.close(async () => {
+      try {
+        const mongoose = require('mongoose');
+        await mongoose.disconnect();
+        logger.info('MongoDB disconnected');
+      } catch (_) {}
+      logger.info('Process exiting');
+      process.exit(0);
+    });
+    // Force-kill if requests haven't drained within 10 s
+    setTimeout(() => {
+      logger.error('Graceful shutdown timed out – forcing exit');
+      process.exit(1);
+    }, 10_000).unref();
+  };
+
+  process.on('SIGTERM', () => shutdown('SIGTERM'));
+  process.on('SIGINT',  () => shutdown('SIGINT'));
 }
 
 if (require.main === module) {
