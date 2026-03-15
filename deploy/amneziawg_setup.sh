@@ -17,6 +17,7 @@ AWG_IF="awg0"
 AWG_DIR="/etc/amnezia/amneziawg"
 AWG_PORT="443"          # UDP 443 – disguised as QUIC/HTTPS, not filtered by GFW
 AWG_SUBNET="10.9.9.1/24"
+AWG_SUBNET_CIDR="10.9.9.0/24"
 AWG_DNS="1.1.1.1,8.8.8.8"
 MTU="1420"              # Optimal for most ISPs; use 1280 only on PPPoE/mobile with fragmentation
 
@@ -180,15 +181,15 @@ H4   = 4
 # MSS clamping: clamps TCP SYN/SYN-ACK segments so they fit inside the WireGuard
 # MTU. Without this, large TCP packets are silently dropped and the connection
 # appears to work but runs at 1-5% of expected speed.
-PostUp   = iptables -A FORWARD -i %i -j ACCEPT; \
-           iptables -A FORWARD -o %i -j ACCEPT; \
-           iptables -t nat -A POSTROUTING -o $ETH_IF -j MASQUERADE; \
-           iptables -t mangle -A FORWARD -p tcp --tcp-flags SYN,RST SYN -j TCPMSS --clamp-mss-to-pmtu; \
+PostUp   = iptables -I FORWARD 1 -i %i -j ACCEPT; \
+           iptables -I FORWARD 1 -o %i -j ACCEPT; \
+           iptables -t nat -A POSTROUTING -s $AWG_SUBNET_CIDR -o $ETH_IF -j MASQUERADE; \
+           iptables -t mangle -I FORWARD 1 -p tcp --tcp-flags SYN,RST SYN -j TCPMSS --clamp-mss-to-pmtu; \
            ip link set dev %i txqueuelen 1000; \
            tc qdisc replace dev %i root fq
 PostDown = iptables -D FORWARD -i %i -j ACCEPT; \
            iptables -D FORWARD -o %i -j ACCEPT; \
-           iptables -t nat -D POSTROUTING -o $ETH_IF -j MASQUERADE; \
+           iptables -t nat -D POSTROUTING -s $AWG_SUBNET_CIDR -o $ETH_IF -j MASQUERADE; \
            iptables -t mangle -D FORWARD -p tcp --tcp-flags SYN,RST SYN -j TCPMSS --clamp-mss-to-pmtu || true
 
 # Peers are appended here by the backend API (same format as WireGuard).
@@ -206,7 +207,8 @@ else
   systemctl enable --now "wg-quick@$AWG_IF" || wg-quick up "$AWG_IF"
 fi
 
-systemctl restart ufw || true
+# Do not restart UFW after awg0 is up; it can reorder/flush chains and degrade
+# tunnel forwarding performance. Route rules were already applied above.
 
 # ─── 8. SSH hardening ────────────────────────────────────────────────────────
 info "Hardening SSH..."
