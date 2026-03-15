@@ -3,7 +3,8 @@
 const mongoose = require('mongoose');
 const bcrypt = require('bcryptjs');
 
-const SALT_ROUNDS = parseInt(process.env.BCRYPT_SALT_ROUNDS || '12', 10);
+// 10 rounds = ~100ms per hash (secure + fast). 12 rounds = ~300ms (unnecessary latency).
+const SALT_ROUNDS = parseInt(process.env.BCRYPT_SALT_ROUNDS || '10', 10);
 
 function normalizeTier(tier) {
   if (tier === 'monthly' || tier === 'quarterly' || tier === 'yearly') {
