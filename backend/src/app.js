@@ -1,6 +1,19 @@
 'use strict';
 
-require('dotenv').config();
+const fs = require('fs');
+const path = require('path');
+
+// Resolve .env robustly even if PM2 starts with an unexpected working directory.
+const envCandidates = [
+  path.resolve(__dirname, '../.env'),
+  path.resolve(process.cwd(), '.env'),
+];
+const resolvedEnvPath = envCandidates.find((p) => fs.existsSync(p));
+if (resolvedEnvPath) {
+  require('dotenv').config({ path: resolvedEnvPath });
+} else {
+  require('dotenv').config();
+}
 
 const express = require('express');
 const helmet = require('helmet');
@@ -22,6 +35,16 @@ const app = express();
 // Trust one proxy hop (nginx) so that express-rate-limit resolves the real
 // client IP from X-Forwarded-For rather than throwing ERR_ERL_UNEXPECTED_X_FORWARDED_FOR.
 app.set('trust proxy', 1);
+
+if (process.env.NODE_ENV !== 'test') {
+  const requiredSecrets = ['JWT_SECRET', 'JWT_REFRESH_SECRET'];
+  const missing = requiredSecrets.filter((k) => !process.env[k] || !String(process.env[k]).trim());
+  if (missing.length > 0) {
+    const msg = `Missing required environment variables: ${missing.join(', ')}`;
+    logger.error(msg);
+    throw new Error(msg);
+  }
+}
 
 async function ensureAdminAccount() {
   const User = require('./models/User');
