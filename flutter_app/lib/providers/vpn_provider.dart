@@ -790,16 +790,16 @@ while (\$true) {
   ///     IPv6 is disabled on the server to prevent GFW de-anonymisation.
   ///  3. Override the Endpoint if forcedEndpoint is provided.
   ///  4. Inject AWG obfuscation parameters from AppConstants if missing.
-  ///     On Windows the standard wireguard.dll tunnel driver rejects unknown
-  ///     keys (Jc/Jmin/Jmax/S1/S2/H1-H4) with error code 0, so they are
-  ///     stripped entirely — all params are 0 anyway (vanilla WG behaviour).
+  ///     Android/iOS/Windows tunnel parsers reject unknown AWG-only keys
+  ///     (Jc/Jmin/Jmax/S1/S2/H1-H4), so these keys are stripped on those
+  ///     platforms to keep the config wireguard-compatible.
   ///  5. Ensure DNS is present.
   Future<String> _patchConfig(
     String config, {
     String? forcedEndpoint,
   }) async {
-    // Windows uses the standard WireGuard tunnel driver which rejects AWG keys.
-    final injectAwgParams = !kIsWeb && !Platform.isWindows;
+    // Android, iOS and Windows tunnel parsers reject AWG-only keys.
+    final injectAwgParams = !kIsWeb && !(Platform.isWindows || Platform.isAndroid || Platform.isIOS);
 
     // ── Patch the config lines ─────────────────────────────────────────────
     final lines = config.split('\n');

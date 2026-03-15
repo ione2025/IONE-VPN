@@ -96,7 +96,7 @@ PersistentKeepalive = 25
   // Bump this value whenever server-side WireGuard baseline changes (for
   // example after restoring a known-good droplet snapshot). The app will clear
   // cached tunnel config once so the next connect fetches a fresh profile.
-  static const String wgConfigRevisionValue = 'amneziawg-2026-03-15-v4';
+  static const String wgConfigRevisionValue = 'amneziawg-2026-03-16-v5';
   /// Set to 'true' while the user is connected; drives auto-reconnect on launch.
   static const String keyAutoConnect = 'ione_auto_connect';
   /// Kill switch preference ('true' | 'false').
