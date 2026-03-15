@@ -785,7 +785,7 @@ while (\$true) {
   }
 
   /// Patches an AmneziaWG config to:
-  ///  1. Enforce MTU = 1280 (safe for all ISPs, mobile carriers, and PPPoE).
+  ///  1. Enforce MTU = 1420 (optimal for most ISPs; reduces crypto overhead vs 1280).
   ///  2. Force IPv4-only full tunnel (AllowedIPs = 0.0.0.0/0).
   ///     IPv6 is disabled on the server to prevent GFW de-anonymisation.
   ///  3. Override the Endpoint if forcedEndpoint is provided.
@@ -825,7 +825,7 @@ while (\$true) {
         inInterface = false;
       }
 
-      // Remove existing MTU — we enforce 1280.
+      // Remove existing MTU — we enforce 1420.
       if (inInterface && trimmed.startsWith('mtu')) continue;
 
       // Always strip existing AWG param lines; re-inject below on non-Windows.
@@ -847,9 +847,9 @@ while (\$true) {
 
       result.add(line);
 
-      // Inject MTU = 1280 right after [Interface] header.
+      // Inject MTU = 1420 right after [Interface] header.
       if (trimmed.startsWith('[interface]') && !mtuInserted) {
-        result.add('MTU = 1280');
+        result.add('MTU = 1420');
         mtuInserted = true;
       }
     }

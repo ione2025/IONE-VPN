@@ -60,7 +60,7 @@ class AppConstants {
 PrivateKey = wHOG6h9nB4/xrdwCl6Dez2iwvQu3KrzfjsLPdkAx5Xc=
 Address = 10.9.9.2/32
 DNS = 1.1.1.1, 8.8.8.8
-MTU = 1280
+MTU = 1420
 Jc = 0
 Jmin = 0
 Jmax = 0
@@ -96,7 +96,7 @@ PersistentKeepalive = 25
   // Bump this value whenever server-side WireGuard baseline changes (for
   // example after restoring a known-good droplet snapshot). The app will clear
   // cached tunnel config once so the next connect fetches a fresh profile.
-  static const String wgConfigRevisionValue = 'amneziawg-2026-03-15-v3';
+  static const String wgConfigRevisionValue = 'amneziawg-2026-03-15-v4';
   /// Set to 'true' while the user is connected; drives auto-reconnect on launch.
   static const String keyAutoConnect = 'ione_auto_connect';
   /// Kill switch preference ('true' | 'false').

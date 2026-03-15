@@ -18,7 +18,7 @@ AWG_DIR="/etc/amnezia/amneziawg"
 AWG_PORT="443"          # UDP 443 – disguised as QUIC/HTTPS, not filtered by GFW
 AWG_SUBNET="10.9.9.1/24"
 AWG_DNS="1.1.1.1,8.8.8.8"
-MTU="1280"              # Safe for all ISPs including PPPoE and mobile carriers
+MTU="1420"              # Optimal for most ISPs; use 1280 only on PPPoE/mobile with fragmentation
 
 GREEN='\033[0;32m'; YELLOW='\033[1;33m'; NC='\033[0m'
 info()  { echo -e "${GREEN}[AWG]${NC}  $*"; }
