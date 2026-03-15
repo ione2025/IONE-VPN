@@ -790,11 +790,17 @@ while (\$true) {
   ///     IPv6 is disabled on the server to prevent GFW de-anonymisation.
   ///  3. Override the Endpoint if forcedEndpoint is provided.
   ///  4. Inject AWG obfuscation parameters from AppConstants if missing.
+  ///     On Windows the standard wireguard.dll tunnel driver rejects unknown
+  ///     keys (Jc/Jmin/Jmax/S1/S2/H1-H4) with error code 0, so they are
+  ///     stripped entirely — all params are 0 anyway (vanilla WG behaviour).
   ///  5. Ensure DNS is present.
   Future<String> _patchConfig(
     String config, {
     String? forcedEndpoint,
   }) async {
+    // Windows uses the standard WireGuard tunnel driver which rejects AWG keys.
+    final injectAwgParams = !kIsWeb && !Platform.isWindows;
+
     // ── Patch the config lines ─────────────────────────────────────────────
     final lines = config.split('\n');
     final result = <String>[];
@@ -803,7 +809,7 @@ while (\$true) {
     bool inInterface = false;
     bool hasDns = false;
 
-    // AWG param keys that must appear in [Interface]
+    // AWG param keys — always stripped, re-injected canonically on non-Windows.
     const awgKeys = {'jc', 'jmin', 'jmax', 's1', 's2', 'h1', 'h2', 'h3', 'h4'};
 
     for (var line in lines) {
@@ -811,8 +817,8 @@ while (\$true) {
 
       if (trimmed.startsWith('[interface]')) inInterface = true;
       if (trimmed.startsWith('[peer]')) {
-        // Before closing [Interface], inject AWG params if not already present.
-        if (!awgParamsInserted) {
+        // Before closing [Interface], inject AWG params on non-Windows.
+        if (injectAwgParams && !awgParamsInserted) {
           result.addAll(_awgParamLines());
           awgParamsInserted = true;
         }
@@ -822,7 +828,7 @@ while (\$true) {
       // Remove existing MTU — we enforce 1280.
       if (inInterface && trimmed.startsWith('mtu')) continue;
 
-      // Remove existing AWG param lines — we will re-inject them canonically.
+      // Always strip existing AWG param lines; re-inject below on non-Windows.
       if (inInterface && awgKeys.any((k) => trimmed.startsWith('$k '))) continue;
 
       // IPv4-only full tunnel: GFW can use IPv6 to de-anonymise VPN users.
@@ -849,7 +855,7 @@ while (\$true) {
     }
 
     // Edge case: config has no [Peer] section yet — inject AWG params at end.
-    if (!awgParamsInserted) {
+    if (injectAwgParams && !awgParamsInserted) {
       result.addAll(_awgParamLines());
     }
 
@@ -865,6 +871,7 @@ while (\$true) {
 
   /// Returns the canonical AmneziaWG obfuscation parameter lines.
   /// Values come from AppConstants which mirror the server's awg0.conf.
+  /// NOT used on Windows (standard wireguard.dll rejects these keys).
   List<String> _awgParamLines() => [
     'Jc = ${AppConstants.awgJc}',
     'Jmin = ${AppConstants.awgJmin}',
