@@ -7,8 +7,8 @@ module.exports = {
   apps: [
     {
       name: 'ione-vpn',
-      script: 'backend/src/app.js',
-      cwd: '/opt/ione-vpn',
+      script: 'src/app.js',
+      cwd: '/opt/ione-vpn/backend',
 
       // ── Clustering ─────────────────────────────────────────────────────────
       // 'max' spawns one worker per vCPU. On a 1-vCPU droplet this equals 1
