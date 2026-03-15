@@ -87,21 +87,39 @@ net.ipv6.conf.default.disable_ipv6 = 1
 # TCP BBR – higher throughput, lower latency
 net.core.default_qdisc = fq
 net.ipv4.tcp_congestion_control = bbr
-# Socket buffers
-net.core.rmem_max = 67108864
-net.core.wmem_max = 67108864
-net.core.rmem_default = 1048576
-net.core.wmem_default = 1048576
-net.ipv4.tcp_rmem = 4096 1048576 67108864
-net.ipv4.tcp_wmem = 4096 1048576 67108864
+# Socket buffers (128 MB) – needed for full-speed WireGuard on gigabit links
+net.core.rmem_max = 134217728
+net.core.wmem_max = 134217728
+net.core.rmem_default = 16777216
+net.core.wmem_default = 16777216
+net.ipv4.tcp_rmem = 4096 87380 134217728
+net.ipv4.tcp_wmem = 4096 65536 134217728
 net.ipv4.udp_rmem_min = 8192
 net.ipv4.udp_wmem_min = 8192
+# Throughput & latency
+# Prevents TCP halving its window after a brief idle pause (critical for VPN speed)
+net.ipv4.tcp_slow_start_after_idle = 0
+# Allow probing for the right MTU when black-hole routers drop oversized packets
+net.ipv4.tcp_mtu_probing = 1
+# TCP Fast Open: client+server (reduces HTTPS handshake by 1 RTT)
+net.ipv4.tcp_fastopen = 3
+# Reduce unsent data buffer so BBR doesn't over-queue (minimises latency spike)
+net.ipv4.tcp_notsent_lowat = 16384
+# Low-latency UDP poll (reduces IRQ-to-userspace delay for WireGuard packets)
+net.core.busy_poll = 50
+net.core.busy_read = 50
 # Connection handling
 net.core.somaxconn = 32768
 net.core.netdev_max_backlog = 32768
 net.ipv4.tcp_max_syn_backlog = 8192
 net.ipv4.tcp_tw_reuse = 1
 net.ipv4.tcp_fin_timeout = 10
+# Detect dead WireGuard peers faster
+net.ipv4.tcp_keepalive_time = 60
+net.ipv4.tcp_keepalive_intvl = 10
+net.ipv4.tcp_keepalive_probes = 6
+# Connection-tracking table – prevents drops under high peer count
+net.netfilter.nf_conntrack_max = 1048576
 # Security
 net.ipv4.conf.all.rp_filter = 1
 net.ipv4.conf.default.rp_filter = 1
@@ -159,12 +177,19 @@ H3   = 3
 H4   = 4
 
 # ── NAT – route AmneziaWG client traffic through the server internet interface ─
+# MSS clamping: clamps TCP SYN/SYN-ACK segments so they fit inside the WireGuard
+# MTU. Without this, large TCP packets are silently dropped and the connection
+# appears to work but runs at 1-5% of expected speed.
 PostUp   = iptables -A FORWARD -i %i -j ACCEPT; \
            iptables -A FORWARD -o %i -j ACCEPT; \
-           iptables -t nat -A POSTROUTING -o $ETH_IF -j MASQUERADE
+           iptables -t nat -A POSTROUTING -o $ETH_IF -j MASQUERADE; \
+           iptables -t mangle -A FORWARD -p tcp --tcp-flags SYN,RST SYN -j TCPMSS --clamp-mss-to-pmtu; \
+           ip link set dev %i txqueuelen 1000; \
+           tc qdisc replace dev %i root fq
 PostDown = iptables -D FORWARD -i %i -j ACCEPT; \
            iptables -D FORWARD -o %i -j ACCEPT; \
-           iptables -t nat -D POSTROUTING -o $ETH_IF -j MASQUERADE
+           iptables -t nat -D POSTROUTING -o $ETH_IF -j MASQUERADE; \
+           iptables -t mangle -D FORWARD -p tcp --tcp-flags SYN,RST SYN -j TCPMSS --clamp-mss-to-pmtu || true
 
 # Peers are appended here by the backend API (same format as WireGuard).
 EOF
