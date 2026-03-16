@@ -40,7 +40,7 @@ const SERVER_ENDPOINT = process.env.AWG_SERVER_ENDPOINT || process.env.WG_SERVER
 // AmneziaWG obfuscation parameters (must match server awg0.conf exactly).
 // All-zero = vanilla WireGuard performance with no DPI fingerprint.
 // To unblock in actively-filtered networks: set S4=16 first, then Jc=1.
-const AWG_PARAMS = {
+const AWG_PARAMS_DEFAULT = {
   Jc:   parseInt(process.env.AWG_JC   ?? '0', 10),
   Jmin: parseInt(process.env.AWG_JMIN ?? '0', 10),
   Jmax: parseInt(process.env.AWG_JMAX ?? '0', 10),
@@ -262,6 +262,36 @@ async function getLiveWireGuardPort() {
   return '';
 }
 
+function parseAwgNumber(conf, key) {
+  const regex = new RegExp(`^\\s*${key}\\s*=\\s*(-?\\d+)\\s*$`, 'im');
+  const match = conf.match(regex);
+  if (!match || !match[1]) return null;
+  const num = Number.parseInt(match[1], 10);
+  return Number.isNaN(num) ? null : num;
+}
+
+/**
+ * Return AWG obfuscation params used in generated client configs.
+ * Prefer live /etc/amnezia/amneziawg/awg0.conf values so client and server
+ * always match after runtime profile changes.
+ */
+async function getLiveAwgParams() {
+  const confPath = path.join(WG_CONFIG_DIR, `${WG_INTERFACE}.conf`);
+  const keys = ['Jc', 'Jmin', 'Jmax', 'S1', 'S2', 'H1', 'H2', 'H3', 'H4'];
+
+  try {
+    const conf = await fs.readFile(confPath, 'utf8');
+    const live = { ...AWG_PARAMS_DEFAULT };
+    for (const key of keys) {
+      const parsed = parseAwgNumber(conf, key);
+      if (parsed !== null) live[key] = parsed;
+    }
+    return live;
+  } catch (_) {
+    return { ...AWG_PARAMS_DEFAULT };
+  }
+}
+
 /**
  * Return server endpoint for generated client configs.
  * Prefer explicit WG_SERVER_ENDPOINT; otherwise derive from SERVER_IP.
@@ -309,6 +339,7 @@ function allocateIp() {
 exports.addPeer = async (userId) => {
   const serverPublicKey = await getServerPublicKey();
   const serverEndpoint = await getServerEndpoint();
+  const awgParams = await getLiveAwgParams();
 
   if (!serverPublicKey) {
     throw new Error('AmneziaWG server public key is missing. Set AWG_SERVER_PUBLIC_KEY in .env or ensure /etc/amnezia/amneziawg/publickey exists.');
@@ -374,20 +405,20 @@ exports.addPeer = async (userId) => {
     `PrivateKey = ${clientPrivateKey}`,
     `Address = ${assignedIp}`,
     `DNS = ${WG_DNS}`,
-    // Default MTU 1420 for best throughput; can be overridden via AWG_MTU.
+    // Default MTU 1280 to avoid PMTU fragmentation on mobile/4G paths.
     `MTU = ${WG_MTU}`,
     // ─ AmneziaWG obfuscation parameters ───────────────────────────────────
     // All zero = vanilla WireGuard speed; no junk overhead.
     // Must be identical to server /etc/amnezia/amneziawg/awg0.conf.
-    `Jc = ${AWG_PARAMS.Jc}`,
-    `Jmin = ${AWG_PARAMS.Jmin}`,
-    `Jmax = ${AWG_PARAMS.Jmax}`,
-    `S1 = ${AWG_PARAMS.S1}`,
-    `S2 = ${AWG_PARAMS.S2}`,
-    `H1 = ${AWG_PARAMS.H1}`,
-    `H2 = ${AWG_PARAMS.H2}`,
-    `H3 = ${AWG_PARAMS.H3}`,
-    `H4 = ${AWG_PARAMS.H4}`,
+    `Jc = ${awgParams.Jc}`,
+    `Jmin = ${awgParams.Jmin}`,
+    `Jmax = ${awgParams.Jmax}`,
+    `S1 = ${awgParams.S1}`,
+    `S2 = ${awgParams.S2}`,
+    `H1 = ${awgParams.H1}`,
+    `H2 = ${awgParams.H2}`,
+    `H3 = ${awgParams.H3}`,
+    `H4 = ${awgParams.H4}`,
     '',
     '[Peer]',
     `PublicKey = ${serverPublicKey}`,
